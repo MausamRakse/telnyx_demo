@@ -13,6 +13,7 @@ Or with a custom assistant:
 
 import sys
 import os
+import json
 import argparse
 import httpx
 from dotenv import load_dotenv
@@ -22,7 +23,7 @@ load_dotenv(Path(__file__).parent / ".env")
 
 ASSISTANT_ID = os.getenv("ASSISTANT_ID", "")
 FROM_NUMBER  = os.getenv("FROM_NUMBER", "")       # +918071581212 from your .env
-SERVER_URL   = "http://localhost:8000"
+SERVER_URL   = "http://localhost:8001"
 
 parser = argparse.ArgumentParser(description="Make an outbound call via Telnyx + Vobiz")
 parser.add_argument("to",           help="Indian number to call (E.164, e.g. +919876543210)")
@@ -46,48 +47,50 @@ if errors:
     sys.exit(1)
 
 # ── Trigger the Call ─────────────────────────────────────────────────────────
-print(f"📞 Initiating outbound call...")
-print(f"   From : {args.from_number}")
-print(f"   To   : {args.to}")
-print(f"   Agent: {args.assistant}")
-print(f"   Server: {args.server}")
-print()
-
 try:
+    print(f"\n📞 Initiating outbound AI call...")
+    print(f"   From  : {FROM_NUMBER}")
+    print(f"   To    : {args.to}")
+    print(f"   Agent : {ASSISTANT_ID}")
+    print()
+
+    # Call the /dial endpoint on our FastAPI server
+    # The server will use Telnyx + Vobiz SIP credentials to reach the destination
     response = httpx.post(
         f"{args.server}/dial",
         params={
             "to":           args.to,
             "from_number":  args.from_number,
-            "assistant_id": args.assistant,
+            "assistant_id": ASSISTANT_ID,
         },
         timeout=30.0,
     )
     data = response.json()
 
-    if response.status_code in (200, 201):
-        # New /dial response format: {success, call_control_id, to, from, raw}
-        call_id  = data.get("call_control_id") or data.get("data", {}).get("call_control_id", "unknown")
-        success  = data.get("success", True)
+    if response.status_code == 200:
+        success  = data.get("success", False)
+        call_id  = data.get("call_control_id", "N/A")
         sip_err  = data.get("error", None)
 
         if not success or sip_err:
             print(f"❌ Call failed!")
             print(f"   Error: {sip_err}")
+            print(f"   Raw Response:")
+            print(json.dumps(data.get("raw"), indent=2))
         else:
             print(f"✅ Call triggered successfully!")
             print(f"   Call Control ID : {call_id}")
             print(f"   To              : {data.get('to', args.to)}")
             print()
             print("👀 Watch your server terminal for:")
-            print("   📞 Call answered! → AI Assistant will attach")
-            print("   💬 Conversation ended.")
+            print("   📞 call.answered  → AI Agent will attach")
+            print("   💬 conversation messages → transcripts")
     else:
         print(f"❌ Call failed (HTTP {response.status_code})")
-        print(f"   Response: {data}")
+        print(f"   Response: {json.dumps(data, indent=2)}")
 
 except httpx.ConnectError:
     print(f"❌ Cannot connect to server at {args.server}")
-    print("   Make sure the server is running: uvicorn app:app --reload --port 8000")
+    print("   Make sure the server is running: bash start.sh")
 except Exception as e:
     print(f"❌ Error: {e}")

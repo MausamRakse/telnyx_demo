@@ -16,16 +16,16 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # ── 1. Start FastAPI server in background ────────────────────────
-echo "▶  Starting FastAPI server on port 8000..."
-python3 -m uvicorn app:app --reload --port 8000 &
+echo "▶  Starting FastAPI server on port 8001..."
+python3 -m uvicorn app:app --reload --port 8001 &
 SERVER_PID=$!
 echo "   Server PID: $SERVER_PID"
 sleep 3
 
 # ── 2. Start ngrok tunnel ────────────────────────────────────────
 echo ""
-echo "▶  Starting ngrok tunnel on port 8000..."
-ngrok http 8000 --log=stdout &
+echo "▶  Starting ngrok tunnel on port 8001..."
+ngrok http 8001 --log=stdout &
 NGROK_PID=$!
 sleep 4
 
@@ -37,8 +37,8 @@ NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | python3 -c \
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "  ✅ Server Address : http://localhost:8000"
-echo "  ✅ Swagger UI Docs: http://localhost:8000/docs"
+echo "  ✅ Server Address : http://localhost:8001"
+echo "  ✅ Swagger UI Docs: http://localhost:8001/docs"
 if [ "$NGROK_URL" != "Not found" ] && [ -n "$NGROK_URL" ]; then
     echo "  ✅ ngrok Public   : $NGROK_URL"
     echo "  ✅ Webhook URL    : $NGROK_URL/webhook"
