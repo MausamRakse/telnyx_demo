@@ -17,7 +17,7 @@ echo ""
 
 # ── 1. Start FastAPI server in background ────────────────────────
 echo "▶  Starting FastAPI server on port 8001..."
-python3 -m uvicorn app:app --reload --port 8001 &
+uvicorn main:app --host 0.0.0.0 --port 8001 --reload &
 SERVER_PID=$!
 echo "   Server PID: $SERVER_PID"
 sleep 3

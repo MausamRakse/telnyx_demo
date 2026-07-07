@@ -6,4 +6,4 @@ pydantic-settings==2.6.1
 python-dotenv==1.0.1
 telnyx                   # Official Telnyx Python SDK
 openai                   # For OpenAI-compatible streaming chat with Telnyx inference
-
+supabase==2.10.0         # Supabase Python client (Postgres persistence)
