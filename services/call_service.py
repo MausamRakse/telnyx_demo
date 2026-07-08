@@ -70,7 +70,10 @@ async def handle_vobiz_answer(form: dict) -> Response:
         
         room_name = f"ai-bridge-{call_uuid}"
         
-        state_payload = {"assistant_id": settings.ASSISTANT_ID}
+        state_payload = {
+            "assistant_id": settings.ASSISTANT_ID,
+            "vobiz_call_uuid": call_uuid
+        }
         client_state_str = encode_client_state(state_payload)
         
         vobiz_conference_sip = f"sip:{room_name}@{settings.VOBIZ_SIP_DOMAIN}"
@@ -142,49 +145,107 @@ async def handle_webhook_event(data: dict) -> dict:
 
     if event_type not in ("call.conversation.message",):
         print(f"\n📨 Event: {event_type} | direction={direction} | from={from_num}")
+    # ── A0. Vobiz CallInitiated (inbound call from Vobiz SIP trunk) ───────────
+    # Vobiz sends this before Telnyx gets involved. We save the call row now
+    # so recordings/transcripts can be linked back to it later.
+    if event_type == "callinitiated":
+        vobiz_uuid = p.get("CallUUID") or data.get("CallUUID", "")
+        direction  = (p.get("Direction") or data.get("Direction", "inbound")).lower()
+        from_num_v = p.get("From") or data.get("From", "unknown")
+        to_num_v   = p.get("To")   or data.get("To",   "unknown")
 
+        print(f"\n📞 Vobiz CallInitiated | UUID={vobiz_uuid} | from={from_num_v} → to={to_num_v}")
 
-    # ── A. Incoming Call ─────────────────────────────────────────────────────
-    if event_type == "call.initiated" and direction == "incoming":
-        print(f"   📞 Answering incoming call from {from_num}")
-        print(f"   call_control_id: {call_control_id}")
-
-        # Persist call row to Supabase
         try:
             supabase.table("calls").upsert({
-                "call_session_id": p.get("call_session_id"),
-                "call_control_id": call_control_id,
+                "vobiz_call_uuid": vobiz_uuid,
+                "call_session_id": vobiz_uuid,   # Use Vobiz UUID as session ID until Telnyx takes over
                 "direction":       direction,
-                "from_number":     from_num,
-                "to_number":       p.get("to"),
+                "from_number":     from_num_v,
+                "to_number":       to_num_v,
                 "status":          "initiated",
-                "started_at":      p.get("start_time") or _now_iso(),
+                "started_at":      _now_iso(),
                 "created_at":      _now_iso(),
             }, on_conflict="call_session_id").execute()
-            print("   💾 Call row saved to Supabase")
+            print(f"   💾 Vobiz call row saved | UUID={vobiz_uuid}")
         except Exception as e:
-            print(f"   ⚠️  calls DB insert failed (non-fatal): {e}")
+            print(f"   ⚠️  Vobiz call row save failed (non-fatal): {e}")
 
-        for attempt in range(1, 6):
-            r = await telnyx.post(
-                f"/calls/{call_control_id}/actions/answer",
-                json={}
-            )
-            print(f"   Attempt {attempt}: Answer → {r.status_code}")
-            if r.status_code in (200, 201):
-                print("   ✅ Call answered successfully!")
-                break
-            elif r.status_code == 422:
-                err = r.json().get("errors", [{}])[0]
-                code = err.get("code", "")
-                print(f"   ⚠️  422 error code: {code} | {err.get('detail','')}")
-                if code == "90018":
-                    print("   ❌ Call ended before we could answer (timing issue).")
+        return {"status": "success"}
+
+    # ── A. Incoming & Outgoing Call (Telnyx call.initiated) ───────────────────
+    if event_type == "call.initiated":
+        session_id = p.get("call_session_id")
+        
+        # Check if we have a Vobiz CallUUID in client_state
+        vobiz_uuid = None
+        if client_state:
+            state_data = decode_client_state(client_state)
+            if state_data:
+                vobiz_uuid = state_data.get("vobiz_call_uuid")
+                print(f"   📞 Decoded vobiz_call_uuid from client_state: {vobiz_uuid}")
+
+        # Clean up SIP prefix/domain if present in numbers
+        clean_from = from_num.split('@')[0].replace('sip:', '') if from_num else None
+        to_field = p.get("to", "")
+        clean_to = to_field.split('@')[0].replace('sip:', '') if to_field else None
+
+        updated = False
+        if vobiz_uuid:
+            try:
+                # Update the existing Vobiz row to use the Telnyx session ID
+                res = supabase.table("calls").update({
+                    "call_session_id": session_id,
+                    "call_control_id": call_control_id,
+                }).eq("vobiz_call_uuid", vobiz_uuid).execute()
+                if res.data:
+                    print(f"   💾 Mapped Vobiz UUID {vobiz_uuid} ➜ Telnyx Session {session_id}")
+                    updated = True
+            except Exception as e:
+                print(f"   ⚠️  Mapping Vobiz to Telnyx failed: {e}")
+
+        if not updated:
+            # If no Vobiz UUID or mapping failed, upsert it under the Telnyx session ID
+            try:
+                supabase.table("calls").upsert({
+                    "call_session_id": session_id,
+                    "call_control_id": call_control_id,
+                    "direction":       direction,
+                    "from_number":     clean_from,
+                    "to_number":       clean_to,
+                    "status":          "initiated",
+                    "started_at":      p.get("start_time") or _now_iso(),
+                    "created_at":      _now_iso(),
+                }, on_conflict="call_session_id").execute()
+                print(f"   💾 Call row saved under Telnyx Session: {session_id}")
+            except Exception as e:
+                print(f"   ⚠️  calls DB insert failed (non-fatal): {e}")
+
+        # Only answer incoming calls directly handled by Telnyx (outbound/bridged leg is outgoing)
+        if direction == "incoming":
+            print(f"   📞 Answering incoming call from {from_num}")
+            print(f"   call_control_id: {call_control_id}")
+            for attempt in range(1, 6):
+                r = await telnyx.post(
+                    f"/calls/{call_control_id}/actions/answer",
+                    json={}
+                )
+                print(f"   Attempt {attempt}: Answer → {r.status_code}")
+                if r.status_code in (200, 201):
+                    print("   ✅ Call answered successfully!")
                     break
-                await asyncio.sleep(0.3)
-            else:
-                print(f"   ❌ Unexpected: {r.text[:200]}")
-                await asyncio.sleep(0.3)
+                elif r.status_code == 422:
+                    err = r.json().get("errors", [{}])[0]
+                    code = err.get("code", "")
+                    print(f"   ⚠️  422 error code: {code} | {err.get('detail','')}")
+                    if code == "90018":
+                        print("   ❌ Call ended before we could answer (timing issue).")
+                        break
+                    await asyncio.sleep(0.3)
+                else:
+                    print(f"   ❌ Unexpected: {r.text[:200]}")
+                    await asyncio.sleep(0.3)
+
 
     # ── B. Call Answered ─────────────────────────────────────────────────────
     elif event_type == "call.answered":
@@ -262,14 +323,32 @@ async def handle_webhook_event(data: dict) -> dict:
         print("Source:", source)
         
         # Finalize call row in Supabase
+        session_id = p.get("call_session_id")
+        vobiz_uuid = p.get("CallUUID") or p.get("call_uuid")
+
         try:
-            final_status = "failed" if cause not in ("N/A", "normal_clearing", None) else "completed"
-            supabase.table("calls").update({
-                "status":       final_status,
-                "ended_at":     _now_iso(),
-                "hangup_cause": cause,
+            # Treat 200, 200 OK, normal_clearing, Normal Hangup, N/A, and empty as completed
+            cause_str = str(cause).lower().strip()
+            is_normal = not cause or cause_str in (
+                "n/a", "normal_clearing", "normal hangup", 
+                "200", "200 ok", "normal"
+            )
+            final_status = "completed" if is_normal else "failed"
+
+            update_fields = {
+                "status":        final_status,
+                "ended_at":      _now_iso(),
+                "hangup_cause":  cause,
                 "hangup_source": source,
-            }).eq("call_session_id", p.get("call_session_id")).execute()
+            }
+
+            if session_id:
+                res = supabase.table("calls").update(update_fields).eq("call_session_id", session_id).execute()
+                if not res.data and vobiz_uuid:
+                    supabase.table("calls").update(update_fields).eq("vobiz_call_uuid", vobiz_uuid).execute()
+            elif vobiz_uuid:
+                supabase.table("calls").update(update_fields).eq("vobiz_call_uuid", vobiz_uuid).execute()
+
             print(f"   💾 Call finalized in Supabase | status={final_status}")
         except Exception as e:
             print(f"   ⚠️  calls update (hangup) failed (non-fatal): {e}")
