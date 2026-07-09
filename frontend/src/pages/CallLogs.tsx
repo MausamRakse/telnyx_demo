@@ -278,7 +278,7 @@ const CallLogs = () => {
                     <td className="px-6 py-4 text-textMuted whitespace-nowrap">{formatDate(log.date)}</td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-bold tracking-wide ${
-                        log.status === 'Completed' ? 'bg-success/10 text-success' : 
+                        log.status === 'Answered' ? 'bg-success/10 text-success' : 
                         log.status === 'Not Answered' ? 'bg-error/10 text-error' : 
                         'bg-warning/10 text-warning animate-pulse'
                       }`}>
@@ -286,16 +286,22 @@ const CallLogs = () => {
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <button
-                        onClick={() => setSelectedLog(log)}
-                        disabled={!log.transcript}
-                        className="text-primary hover:text-primary-hover font-medium disabled:text-textMuted/40 transition-colors disabled:cursor-not-allowed text-[13px]"
-                      >
-                        View Text
-                      </button>
+                      {log.status === 'Not Answered' ? (
+                        <span className="text-textMuted/40 text-[13px]">—</span>
+                      ) : (
+                        <button
+                          onClick={() => setSelectedLog(log)}
+                          disabled={!log.transcript}
+                          className="text-primary hover:text-primary-hover font-medium disabled:text-textMuted/40 transition-colors disabled:cursor-not-allowed text-[13px]"
+                        >
+                          View Text
+                        </button>
+                      )}
                     </td>
                     <td className="px-6 py-4">
-                      {log.recording_url ? (
+                      {log.status === 'Not Answered' ? (
+                        <span className="text-textMuted/40 text-[13px]">—</span>
+                      ) : log.recording_url ? (
                         activeAudioLog?.call_id === log.call_id ? (
                           /* COMPACT INLINE PILL PLAYER */
                           <div className="flex items-center gap-1.5 bg-muted/95 border border-border/80 rounded-full px-1.5 py-0.5 w-max animate-in zoom-in-95 duration-200 shadow-sm">

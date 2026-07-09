@@ -283,7 +283,14 @@ async def handle_webhook_event(data: dict) -> dict:
         
         # Finalize call row in Supabase
         try:
-            final_status = "failed" if cause not in ("N/A", "normal_clearing", None) else "completed"
+            current_call_res = supabase.table("calls").select("status").eq("call_session_id", p.get("call_session_id")).execute()
+            current_status = current_call_res.data[0].get("status") if current_call_res.data else None
+            
+            if current_status in ("answered", "completed"):
+                final_status = "completed"
+            else:
+                final_status = "no_answer"
+                
             supabase.table("calls").update({
                 "status":       final_status,
                 "ended_at":     _now_iso(),
