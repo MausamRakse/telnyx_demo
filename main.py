@@ -38,7 +38,11 @@ app.include_router(central_router, prefix="/api")
 @app.post("/webhook", tags=["Webhooks"])
 async def webhook_handler(request: Request):
     """Handle all incoming webhooks from Telnyx (root-level for Telnyx compatibility)."""
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        form = await request.form()
+        data = {k: v for k, v in form.items()}
     return await handle_webhook_event(data)
 
 @app.post("/dial", tags=["Call Control"])

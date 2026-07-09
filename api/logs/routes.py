@@ -12,10 +12,10 @@ Endpoints:
   GET /logs/stats               → { total_calls, total_completed, active_agents }
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 from utils.supabase_client import supabase
-from services.recording_service import fetch_recording
+from utils.telnyx_client import telnyx
 
 router = APIRouter()
 
@@ -39,15 +39,28 @@ def _format_call_log(row: dict) -> dict:
     raw_status = (row.get("status") or "").lower()
     display_status = status_map.get(raw_status, "Processing")
 
+    direction = row.get("direction", "incoming")
+    if direction == "outgoing":
+        raw_num = row.get("to_number") or row.get("from_number") or "unknown"
+    else:
+        raw_num = row.get("from_number") or row.get("to_number") or "unknown"
+        
+    # If raw_num is a sip URI like sip:919770774461@vobiz... extract the number
+    if raw_num.startswith("sip:"):
+        raw_num = raw_num.split("sip:")[1].split("@")[0]
+
+    assistant_info = row.get("assistants") or {}
+    agent_name = assistant_info.get("name") or row.get("sip_trunk") or "AI Agent"
+
     return {
         "call_id":       row.get("call_session_id") or row.get("id", ""),
-        "phone_number":  row.get("from_number") or row.get("to_number") or "unknown",
+        "phone_number":  raw_num,
         "date":          row.get("created_at") or row.get("started_at") or "",
         "status":        display_status,
         "recording_url": None,     # populated below if available
         "transcript":    None,
         "json_output":   None,
-        "agent_name":    row.get("sip_trunk", "AI Agent"),
+        "agent_name":    agent_name,
         "customer_name": None,
     }
 
@@ -61,7 +74,7 @@ async def call_logs_endpoint(limit: int = 50):
     try:
         result = (
             supabase.table("calls")
-            .select("*")
+            .select("*, assistants(name)")
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
@@ -81,18 +94,21 @@ async def call_logs_endpoint(limit: int = 50):
             try:
                 rec_result = (
                     supabase.table("recordings")
-                    .select("recording_id, mp3_url, wav_url")
+                    .select("recording_id, mp3_url, wav_url, duration_secs")
                     .eq("call_id", call_id)
                     .limit(1)
                     .execute()
                 )
                 if rec_result.data:
                     rec = rec_result.data[0]
-                    rec_id = rec.get("recording_id")
-                    if rec_id:
-                        log["recording_url"] = f"/api/logs/recordings/{rec_id}/play"
+                    if rec.get("recording_id"):
+                        log["recording_url"] = f"/api/logs/recordings/{rec['recording_id']}/play"
                     else:
                         log["recording_url"] = rec.get("mp3_url") or rec.get("wav_url")
+                        
+                    # Override status to Completed if recording is longer than 2s
+                    if rec.get("duration_secs", 0) > 2:
+                        log["status"] = "Completed"
             except Exception:
                 pass
 
@@ -159,6 +175,41 @@ async def stats_endpoint():
     }
 
 
+@router.get("/logs/recordings/{recording_id}/play")
+async def play_recording(recording_id: str):
+    """
+    Proxy endpoint for playing recordings to bypass S3 expiration.
+    Fetches the fresh playback URL from Telnyx API on-demand.
+    """
+    try:
+        response = await telnyx.get(f"/recordings/{recording_id}")
+        if response.status_code == 200:
+            data = response.json().get("data", {})
+            download_urls = data.get("download_urls", {})
+            fresh_url = download_urls.get("mp3") or download_urls.get("wav")
+            if fresh_url:
+                return RedirectResponse(url=fresh_url)
+        
+        # Fallback to local DB url if Telnyx fetch fails
+        rec_result = (
+            supabase.table("recordings")
+            .select("mp3_url, wav_url")
+            .eq("recording_id", recording_id)
+            .limit(1)
+            .execute()
+        )
+        if rec_result.data:
+            rec = rec_result.data[0]
+            url = rec.get("mp3_url") or rec.get("wav_url")
+            if url:
+                return RedirectResponse(url=url)
+                
+    except Exception as e:
+        print(f"⚠️  Error fetching recording {recording_id}: {e}")
+        
+    return {"error": "Recording not found or expired"}
+
+
 @router.get("/users/me")
 async def get_user_me():
     """
@@ -201,20 +252,3 @@ async def create_campaign():
 async def update_campaign():
     """Stub — Campaign management not in this backend."""
     return {"success": False, "message": "Campaign management not supported in this backend."}
-
-
-@router.get("/logs/recordings/{recording_id}/play")
-async def play_recording_endpoint(recording_id: str):
-    """
-    Get a fresh pre-signed recording URL from Telnyx and redirect to it.
-    This bypasses the 10-minute AWS S3 URL expiration issue.
-    """
-    try:
-        record = await fetch_recording(recording_id)
-        fresh_url = record.download_urls.mp3 or record.download_urls.wav
-        if fresh_url:
-            return RedirectResponse(url=fresh_url)
-    except Exception as e:
-        print(f"⚠️ Error fetching fresh recording URL: {e}")
-    raise HTTPException(status_code=404, detail="Recording URL not found or expired on Telnyx")
-

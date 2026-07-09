@@ -6,7 +6,7 @@ from config import settings
 from utils.telnyx_client import telnyx
 from utils.supabase_client import supabase
 from utils.helpers import encode_client_state, decode_client_state, build_sip_uri, extract_telnyx_error
-from services.recording_service import store_recording_id, fetch_recording
+from services.recording_service import store_recording_id, fetch_recording, start_recording
 from services.transcript_service import (
     start_transcription,
     handle_transcription_event,
@@ -70,10 +70,7 @@ async def handle_vobiz_answer(form: dict) -> Response:
         
         room_name = f"ai-bridge-{call_uuid}"
         
-        state_payload = {
-            "assistant_id": settings.ASSISTANT_ID,
-            "vobiz_call_uuid": call_uuid
-        }
+        state_payload = {"assistant_id": settings.ASSISTANT_ID}
         client_state_str = encode_client_state(state_payload)
         
         vobiz_conference_sip = f"sip:{room_name}@{settings.VOBIZ_SIP_DOMAIN}"
@@ -145,86 +142,30 @@ async def handle_webhook_event(data: dict) -> dict:
 
     if event_type not in ("call.conversation.message",):
         print(f"\n📨 Event: {event_type} | direction={direction} | from={from_num}")
-    # ── A0. Vobiz CallInitiated (inbound call from Vobiz SIP trunk) ───────────
-    # Vobiz sends this before Telnyx gets involved. We save the call row now
-    # so recordings/transcripts can be linked back to it later.
-    if event_type == "callinitiated":
-        vobiz_uuid = p.get("CallUUID") or data.get("CallUUID", "")
-        direction  = (p.get("Direction") or data.get("Direction", "inbound")).lower()
-        from_num_v = p.get("From") or data.get("From", "unknown")
-        to_num_v   = p.get("To")   or data.get("To",   "unknown")
 
-        print(f"\n📞 Vobiz CallInitiated | UUID={vobiz_uuid} | from={from_num_v} → to={to_num_v}")
 
+    # ── A. Call Initiated ────────────────────────────────────────────────────
+    if event_type == "call.initiated":
+        print(f"   📞 Call initiated from {from_num} to {p.get('to')}")
+        print(f"   call_control_id: {call_control_id}")
+
+        # Persist call row to Supabase for BOTH incoming and outgoing
         try:
             supabase.table("calls").upsert({
-                "vobiz_call_uuid": vobiz_uuid,
-                "call_session_id": vobiz_uuid,   # Use Vobiz UUID as session ID until Telnyx takes over
+                "call_session_id": p.get("call_session_id"),
+                "call_control_id": call_control_id,
                 "direction":       direction,
-                "from_number":     from_num_v,
-                "to_number":       to_num_v,
+                "from_number":     from_num,
+                "to_number":       p.get("to"),
                 "status":          "initiated",
-                "started_at":      _now_iso(),
+                "started_at":      p.get("start_time") or _now_iso(),
                 "created_at":      _now_iso(),
             }, on_conflict="call_session_id").execute()
-            print(f"   💾 Vobiz call row saved | UUID={vobiz_uuid}")
+            print("   💾 Call row saved to Supabase")
         except Exception as e:
-            print(f"   ⚠️  Vobiz call row save failed (non-fatal): {e}")
+            print(f"   ⚠️  calls DB insert failed (non-fatal): {e}")
 
-        return {"status": "success"}
-
-    # ── A. Incoming & Outgoing Call (Telnyx call.initiated) ───────────────────
-    if event_type == "call.initiated":
-        session_id = p.get("call_session_id")
-        
-        # Check if we have a Vobiz CallUUID in client_state
-        vobiz_uuid = None
-        if client_state:
-            state_data = decode_client_state(client_state)
-            if state_data:
-                vobiz_uuid = state_data.get("vobiz_call_uuid")
-                print(f"   📞 Decoded vobiz_call_uuid from client_state: {vobiz_uuid}")
-
-        # Clean up SIP prefix/domain if present in numbers
-        clean_from = from_num.split('@')[0].replace('sip:', '') if from_num else None
-        to_field = p.get("to", "")
-        clean_to = to_field.split('@')[0].replace('sip:', '') if to_field else None
-
-        updated = False
-        if vobiz_uuid:
-            try:
-                # Update the existing Vobiz row to use the Telnyx session ID
-                res = supabase.table("calls").update({
-                    "call_session_id": session_id,
-                    "call_control_id": call_control_id,
-                }).eq("vobiz_call_uuid", vobiz_uuid).execute()
-                if res.data:
-                    print(f"   💾 Mapped Vobiz UUID {vobiz_uuid} ➜ Telnyx Session {session_id}")
-                    updated = True
-            except Exception as e:
-                print(f"   ⚠️  Mapping Vobiz to Telnyx failed: {e}")
-
-        if not updated:
-            # If no Vobiz UUID or mapping failed, upsert it under the Telnyx session ID
-            try:
-                supabase.table("calls").upsert({
-                    "call_session_id": session_id,
-                    "call_control_id": call_control_id,
-                    "direction":       direction,
-                    "from_number":     clean_from,
-                    "to_number":       clean_to,
-                    "status":          "initiated",
-                    "started_at":      p.get("start_time") or _now_iso(),
-                    "created_at":      _now_iso(),
-                }, on_conflict="call_session_id").execute()
-                print(f"   💾 Call row saved under Telnyx Session: {session_id}")
-            except Exception as e:
-                print(f"   ⚠️  calls DB insert failed (non-fatal): {e}")
-
-        # Only answer incoming calls directly handled by Telnyx (outbound/bridged leg is outgoing)
         if direction == "incoming":
-            print(f"   📞 Answering incoming call from {from_num}")
-            print(f"   call_control_id: {call_control_id}")
             for attempt in range(1, 6):
                 r = await telnyx.post(
                     f"/calls/{call_control_id}/actions/answer",
@@ -245,7 +186,6 @@ async def handle_webhook_event(data: dict) -> dict:
                 else:
                     print(f"   ❌ Unexpected: {r.text[:200]}")
                     await asyncio.sleep(0.3)
-
 
     # ── B. Call Answered ─────────────────────────────────────────────────────
     elif event_type == "call.answered":
@@ -298,6 +238,22 @@ async def handle_webhook_event(data: dict) -> dict:
                 )
                 if ast_result.data:
                     update_data["assistant_id"] = ast_result.data[0]["id"]
+                else:
+                    try:
+                        from services.assistant_service import get_assistant, _telnyx_to_db_row
+                        print(f"   🤖 Assistant {assistant_to_use} not found in DB. Fetching from Telnyx...")
+                        telnyx_resp = await get_assistant(assistant_to_use)
+                        telnyx_data = telnyx_resp.get("data", telnyx_resp)
+                        row = _telnyx_to_db_row(telnyx_data)
+                        row["created_at"] = telnyx_data.get("created_at") or _now_iso()
+                        upsert_res = supabase.table("assistants").upsert(
+                            row, on_conflict="telnyx_assistant_id"
+                        ).execute()
+                        if upsert_res.data:
+                            update_data["assistant_id"] = upsert_res.data[0]["id"]
+                            print(f"   ✅ Dynamically synced assistant: {row['name']}")
+                    except Exception as ae:
+                        print(f"   ⚠️  Failed to dynamically sync assistant {assistant_to_use}: {ae}")
             supabase.table("calls").update(update_data).eq(
                 "call_session_id", p.get("call_session_id")
             ).execute()
@@ -313,6 +269,9 @@ async def handle_webhook_event(data: dict) -> dict:
             direction=direction,
         )
 
+        # Start call recording programmatically
+        await start_recording(call_control_id)
+
     # ── C. Call Hangup ───────────────────────────────────────────────────────
     elif event_type in ("call.hangup", "hangup"):
         cause = p.get("sip_hangup_cause", "N/A")
@@ -323,59 +282,19 @@ async def handle_webhook_event(data: dict) -> dict:
         print("Source:", source)
         
         # Finalize call row in Supabase
-        session_id = p.get("call_session_id")
-        vobiz_uuid = p.get("CallUUID") or p.get("call_uuid")
-
         try:
-            # Treat 200, 200 OK, normal_clearing, Normal Hangup, N/A, and empty as completed
-            cause_str = str(cause).lower().strip()
-            is_normal = not cause or cause_str in (
-                "n/a", "normal_clearing", "normal hangup", 
-                "200", "200 ok", "normal"
-            )
-            final_status = "completed" if is_normal else "failed"
-
-            update_fields = {
-                "status":        final_status,
-                "ended_at":      _now_iso(),
-                "hangup_cause":  cause,
+            final_status = "failed" if cause not in ("N/A", "normal_clearing", None) else "completed"
+            supabase.table("calls").update({
+                "status":       final_status,
+                "ended_at":     _now_iso(),
+                "hangup_cause": cause,
                 "hangup_source": source,
-            }
-
-            if session_id:
-                res = supabase.table("calls").update(update_fields).eq("call_session_id", session_id).execute()
-                if not res.data and vobiz_uuid:
-                    supabase.table("calls").update(update_fields).eq("vobiz_call_uuid", vobiz_uuid).execute()
-            elif vobiz_uuid:
-                supabase.table("calls").update(update_fields).eq("vobiz_call_uuid", vobiz_uuid).execute()
-
+            }).eq("call_session_id", p.get("call_session_id")).execute()
             print(f"   💾 Call finalized in Supabase | status={final_status}")
         except Exception as e:
             print(f"   ⚠️  calls update (hangup) failed (non-fatal): {e}")
 
-        if settings.TELNYX_ACCOUNT_SID:
-            print("\n📜 Fetching Post-Call Transcripts from TeXML API...")
-            try:
-                res = await telnyx.get(
-                    f"/texml/Accounts/{settings.TELNYX_ACCOUNT_SID}/Transcriptions.json?PageSize=10"
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    transcriptions = data.get("transcriptions", [])
-                    if transcriptions:
-                        for t in transcriptions:
-                            date = t.get("date_created", "Unknown Date")
-                            text = t.get("transcription_text") or t.get("text") or json.dumps(t)
-                            print(f"   [{date}] {text}")
-                    else:
-                        print("   (No transcriptions returned by API)")
-                else:
-                    print(f"   ❌ Transcript fetch failed: {res.status_code}")
-                    print(f"      {res.text}")
-            except Exception as e:
-                print(f"   ❌ Error fetching transcripts: {e}")
-        else:
-            print("\\n⚠️ Skipping full transcript fetch (TELNYX_ACCOUNT_SID not set in .env)")
+
 
         # Fetch full AI conversation transcript and store it (Approach B)
         session_id = p.get("call_session_id")

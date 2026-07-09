@@ -37,7 +37,7 @@ const CreateAgentModal = ({ onClose }: Props) => {
     if (!formData.agent_name.trim()) newErrors.agent_name = true;
     if (!formData.custom_first_line.trim()) newErrors.custom_first_line = true;
     if (!formData.prompt_text.trim()) newErrors.prompt_text = true;
-    if (formData.voice_id === 0) newErrors.voice_id = true;
+    // if (formData.voice_id === 0) newErrors.voice_id = true;
 
     // cal_api_key and cal_event_type_id are now strictly optional so no validation needed here
 
@@ -111,6 +111,7 @@ const CreateAgentModal = ({ onClose }: Props) => {
             {errors.prompt_text && <span className="text-[12px] text-error">Required field</span>}
           </div>
 
+          {/*
           <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col gap-1.5">
               <label className="text-[13px] font-semibold text-surface-foreground">Language</label>
@@ -173,7 +174,9 @@ const CreateAgentModal = ({ onClose }: Props) => {
               ))}
             </select>
           </div>
+          */}
 
+          {/*
           <div className="pt-2">
             <div 
               onClick={() => setFormData({ ...formData, enable_calendar_booking: !formData.enable_calendar_booking })}
@@ -195,6 +198,7 @@ const CreateAgentModal = ({ onClose }: Props) => {
               </div>
             </div>
           </div>
+          */}
 
           <div className="pt-2 flex justify-end gap-3 border-t border-border mt-4">
             <button type="button" onClick={() => onClose()} className="btn-outline">Cancel</button>

@@ -39,7 +39,7 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 
     const initAuth = async () => {
       const sb = await getSupabase();
-      
+
       const { data: { session } } = await sb.auth.getSession();
       setSession(session);
       setLoading(false);

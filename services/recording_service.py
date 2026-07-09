@@ -19,6 +19,32 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def start_recording(call_control_id: str) -> bool:
+    """
+    Start recording dynamically during the call using the Call Control API.
+    """
+    if not call_control_id:
+        return False
+        
+    try:
+        resp = await telnyx.post(
+            f"/calls/{call_control_id}/actions/record_start",
+            json={
+                "format": "wav",
+                "channels": "single"
+            }
+        )
+        if resp.status_code in (200, 201):
+            print(f"   ✅ Recording started for {call_control_id}")
+            return True
+        else:
+            print(f"   ⚠️  Recording start failed: HTTP {resp.status_code} | {resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"   ⚠️  Recording start error: {e}")
+        return False
+
+
 async def store_recording_id(
     recording_id: str,
     call_session_id: Optional[str],

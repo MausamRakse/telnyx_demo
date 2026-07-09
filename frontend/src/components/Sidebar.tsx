@@ -84,8 +84,8 @@ const Sidebar = () => {
             <span className="text-[11px] text-textMuted font-medium truncate italic">Online</span>
           </div>
         </div>
-        
-        <button 
+
+        <button
           onClick={handleLogout}
           className="flex items-center gap-3 px-4 py-3 w-full text-left rounded-xl text-error hover:bg-error/10 transition-all text-[14px] font-medium group"
         >

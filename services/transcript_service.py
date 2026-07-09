@@ -59,8 +59,9 @@ async def start_transcription(
             f"/calls/{call_control_id}/actions/transcription_start",
             json={
                 "language":             "en",
-                "transcription_engine": "B",   # Deepgram (fast, accurate)
-                "interim_results":      False,  # only fire when is_final=True
+                "transcription_engine": "A",    # Google
+                "transcription_tracks": "inbound",
+                "interim_results":      True,   # Real-time partial results
             },
         )
         if resp.status_code in (200, 201):
@@ -87,10 +88,11 @@ async def handle_transcription_event(payload: dict) -> None:
     call_leg_id     = payload.get("call_leg_id", "")
     call_session_id = payload.get("call_session_id", "")
     occurred_at     = payload.get("occurred_at", "")
-    tx_data         = payload.get("transcription_data", {})
+    tx_data         = payload.get("transcription_data") or payload
 
     is_final    = tx_data.get("is_final", False)
-    transcript  = (tx_data.get("transcript") or "").strip()
+    # Some engines use 'transcript', others use 'text'
+    transcript  = (tx_data.get("transcript") or tx_data.get("text") or "").strip()
     confidence  = tx_data.get("confidence")
 
     # Only store final results (matches the JS is_final guard)
