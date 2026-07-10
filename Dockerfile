@@ -26,6 +26,9 @@ COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 # Copy backend application code
 COPY backend/ ./backend/
 
+# Set Python path to resolve imports within the backend directory
+ENV PYTHONPATH=/app/backend
+
 # Expose port and define start command (Render injects $PORT)
 EXPOSE 10000
 CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-10000}
