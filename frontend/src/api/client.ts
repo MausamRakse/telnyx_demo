@@ -64,6 +64,52 @@ export const disconnectCalApi = () =>
 export const disconnectAgentCalApi = (agent_id: string) =>
   api.post("agents/disconnect-agent-cal", { agent_id }).then(r => r.data);
 
+// ── Campaign API (real implementation) ────────────────────────────────────────
+
+export const createCampaignV2 = (data: CampaignCreatePayload) =>
+  api.post("campaigns/", data).then(r => r.data);
+
+export const listCampaigns = (): Promise<{ campaigns: Campaign[]; count: number }> =>
+  api.get("campaigns/").then(r => r.data);
+
+export const getCampaign = (id: string): Promise<{ campaign: Campaign }> =>
+  api.get(`campaigns/${id}`).then(r => r.data);
+
+export const uploadContacts = (
+  campaignId: string,
+  file: File,
+): Promise<ContactUploadResult> => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post(`campaigns/${campaignId}/upload`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  }).then(r => r.data);
+};
+
+export const startCampaign = (id: string) =>
+  api.post(`campaigns/${id}/start`).then(r => r.data);
+
+export const pauseCampaign = (id: string) =>
+  api.post(`campaigns/${id}/pause`).then(r => r.data);
+
+export const stopCampaign = (id: string) =>
+  api.post(`campaigns/${id}/stop`).then(r => r.data);
+
+export const getCampaignProgress = (id: string): Promise<CampaignProgress> =>
+  api.get(`campaigns/${id}/progress`).then(r => r.data);
+
+export const getCampaignContacts = (
+  id: string,
+  page = 1,
+  pageSize = 50,
+): Promise<{ campaign_id: string; total: number; page: number; page_size: number; contacts: CampaignContact[] }> =>
+  api.get(`campaigns/${id}/contacts?page=${page}&page_size=${pageSize}`).then(r => r.data);
+
+export const reconcileCampaign = (id: string): Promise<CDRReconcileResult> =>
+  api.post(`campaigns/${id}/reconcile`).then(r => r.data);
+
+// ── Interfaces ─────────────────────────────────────────────────────────────────
+
 export interface CreateAgentPayload {
   agent_name: string;
   custom_first_line: string;
@@ -148,3 +194,104 @@ export const getMeetingLogs = async (): Promise<MeetingLog[]> => {
   const { data } = await api.get('/calls/meeting-logs');
   return data.logs;
 };
+
+// ── Campaign interfaces ─────────────────────────────────────────────────────
+
+export interface CampaignCreatePayload {
+  name: string;
+  connection_id: string;
+  from_number: string;
+  max_concurrent?: number;
+  calls_per_second?: number;
+}
+
+export interface Campaign {
+  id: string;
+  name: string;
+  status: 'draft' | 'running' | 'paused' | 'completed' | 'stopped';
+  connection_id: string;
+  from_number: string;
+  max_concurrent: number;
+  calls_per_second: number;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  total_contacts?: number;
+  pending?: number;
+  queued?: number;
+  calling?: number;
+  answered?: number;
+  no_answer?: number;
+  voicemail?: number;
+  busy?: number;
+  failed?: number;
+  total_dialed?: number;
+}
+
+export interface CampaignContact {
+  id: string;
+  campaign_id: string;
+  phone_number: string;
+  name?: string;
+  call_status: 'pending' | 'queued' | 'calling' | 'answered' | 'no_answer' | 'voicemail' | 'busy' | 'failed';
+  call_control_id?: string;
+  call_session_id?: string;
+  dialed_at?: string;
+  answered_at?: string;
+  ended_at?: string;
+  hangup_cause?: string;
+  retry_count: number;
+  created_at?: string;
+}
+
+export interface CampaignProgress {
+  campaign_id: string;
+  campaign_name: string;
+  campaign_status: string;
+  total_contacts: number;
+  pending: number;
+  queued: number;
+  calling: number;
+  answered: number;
+  no_answer: number;
+  voicemail: number;
+  busy: number;
+  failed: number;
+  total_dialed: number;
+  answer_rate_pct: number;
+}
+
+export interface FailedRow {
+  row_number: number;
+  data: Record<string, string>;
+  reason: string;
+}
+
+export interface ContactUploadResult {
+  campaign_id: string;
+  success_count: number;
+  failed_count: number;
+  failed_rows: FailedRow[];
+}
+
+export interface CDRRecord {
+  call_session_id?: string;
+  call_leg_id?: string;
+  from_number?: string;
+  to_number?: string;
+  direction?: string;
+  duration_secs?: number;
+  status?: string;
+  hangup_cause?: string;
+  start_time?: string;
+  end_time?: string;
+  answered_at?: string;
+}
+
+export interface CDRReconcileResult {
+  campaign_id: string;
+  contacts_checked: number;
+  contacts_updated: number;
+  records: CDRRecord[];
+  errors: string[];
+}

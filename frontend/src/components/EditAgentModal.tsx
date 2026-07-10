@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { X, Loader2, AlertTriangle, Trash2, Calendar, Link2, Volume2 } from 'lucide-react';
-import { updateAgentApi, deleteAgentApi, getCalAuthUrl, disconnectAgentCalApi, type Agent } from '../api/client';
+import { X, Loader2, AlertTriangle, Trash2 } from 'lucide-react';
+import { updateAgentApi, deleteAgentApi, type Agent } from '../api/client';
 
 import { useAgentStore } from '../store/agentStore';
 
@@ -11,10 +11,6 @@ interface Props {
   agent: Agent;
   onClose: () => void;
 }
-
-const AVAILABLE_PHONE_NUMBERS = [
-  { value: '+918035736739', label: '+91 80357 36739' }
-];
 
 const EditAgentModal = ({ agent, onClose }: Props) => {
   const [loading, setLoading] = useState(false);
@@ -37,13 +33,11 @@ const EditAgentModal = ({ agent, onClose }: Props) => {
 
   const [errors, setErrors] = useState<Record<string, boolean>>({});
   const [calConnected, setCalConnected] = useState(false);
-  const [checkingCal, setCheckingCal] = useState(true);
   const [showVoiceModal, setShowVoiceModal] = useState(false);
 
   useEffect(() => {
     // Initialize cal connected state directly from the agent object (per-agent isolation)
     setCalConnected(!!agent.cal_connected);
-    setCheckingCal(false);
 
     const handleOAuthMessage = async (event: MessageEvent) => {
       if (event.data?.type === 'CAL_AUTH_SUCCESS') {
@@ -56,30 +50,6 @@ const EditAgentModal = ({ agent, onClose }: Props) => {
     return () => window.removeEventListener('message', handleOAuthMessage);
   }, [agent.cal_connected]);
 
-  const handleConnectCal = async () => {
-    try {
-      const res = await getCalAuthUrl(agent.id);
-      if (res.url) {
-        const width = 600, height = 700;
-        const left = window.screen.width / 2 - width / 2;
-        const top = window.screen.height / 2 - height / 2;
-        window.open(res.url, 'cal_auth', `width=${width},height=${height},left=${left},top=${top}`);
-      }
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Failed to initialize Cal.com connection');
-    }
-  };
-
-  const handleDisconnectCal = async () => {
-    if (!confirm('Are you sure you want to disconnect Cal.com from this agent? This will disable booking for this agent only.')) return;
-    try {
-      await disconnectAgentCalApi(agent.id);
-      setCalConnected(false);
-      toast.success('Cal.com disconnected from this agent');
-    } catch (e) {
-      toast.error('Failed to disconnect Cal.com');
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

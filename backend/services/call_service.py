@@ -14,8 +14,70 @@ from services.transcript_service import (
 )
 
 
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── Campaign webhook helpers ───────────────────────────────────────────────────
+
+_HANGUP_CAUSE_MAP = {
+    # Raw Telnyx SIP hangup cause code → campaign contact call_status
+    "USER_BUSY":           "busy",
+    "CALL_REJECTED":       "busy",
+    "NO_ANSWER":           "no_answer",
+    "ORIGINATOR_CANCEL":   "no_answer",
+    "SUBSCRIBER_ABSENT":   "no_answer",
+    "UNALLOCATED_NUMBER":  "failed",
+    "INCOMPATIBLE_DEST":   "failed",
+    "NORMAL_CLEARING":     "no_answer",   # if not yet answered
+}
+
+
+def _is_campaign_call(state_data: dict) -> bool:
+    """Return True if client_state identifies this as a campaign call leg."""
+    return state_data.get("type") == "campaign_call" and bool(state_data.get("campaign_id"))
+
+
+def _update_campaign_contact(contact_id: str, **fields) -> None:
+    """Non-fatal update of a campaign_contacts row."""
+    try:
+        supabase.table("campaign_contacts").update(fields).eq("id", contact_id).execute()
+    except Exception as e:
+        print(f"   ⚠️  campaign_contacts update failed (non-fatal): {e}")
+
+
+def _check_campaign_completion(campaign_id: str) -> None:
+    """
+    After a contact reaches a terminal status, check whether all contacts
+    are done and mark the campaign 'completed' if so.
+    This is a safety net — the dialer loop also does this check.
+    """
+    try:
+        active = (
+            supabase.table("campaign_contacts")
+            .select("id", count="exact")
+            .eq("campaign_id", campaign_id)
+            .in_("call_status", ["pending", "queued", "calling"])
+            .execute()
+        )
+        if not (active.count and active.count > 0):
+            # Check current campaign status — only complete if it was 'running'
+            camp = (
+                supabase.table("campaigns")
+                .select("status")
+                .eq("id", campaign_id)
+                .limit(1)
+                .execute()
+            )
+            if camp.data and camp.data[0].get("status") == "running":
+                supabase.table("campaigns").update({
+                    "status":       "completed",
+                    "completed_at": _now_iso(),
+                }).eq("id", campaign_id).execute()
+                print(f"   🎉 Campaign {campaign_id} auto-completed via webhook")
+    except Exception as e:
+        print(f"   ⚠️  campaign completion check failed (non-fatal): {e}")
 
 
 async def trigger_outbound_dial(to: str, from_number: str, assistant_id: str) -> dict:
@@ -144,10 +206,24 @@ async def handle_webhook_event(data: dict) -> dict:
         print(f"\n📨 Event: {event_type} | direction={direction} | from={from_num}")
 
 
-    # ── A. Call Initiated ────────────────────────────────────────────────────
+    # ── A. Call Initiated ────────────────────────────────────────────────────────────
     if event_type == "call.initiated":
         print(f"   📞 Call initiated from {from_num} to {p.get('to')}")
         print(f"   call_control_id: {call_control_id}")
+
+        # ── Campaign call: update contact to 'calling' status ──────────────────
+        state_data = decode_client_state(client_state) if client_state else {}
+        if _is_campaign_call(state_data):
+            contact_id = state_data.get("contact_id")
+            if contact_id:
+                _update_campaign_contact(
+                    contact_id,
+                    call_status    = "calling",
+                    call_control_id= call_control_id if call_control_id != "N/A" else None,
+                    dialed_at      = _now_iso(),
+                )
+                print(f"   📊 Campaign contact {contact_id} → calling")
+            return {"status": "success"}
 
         # Persist call row to Supabase for BOTH incoming and outgoing
         try:
@@ -187,25 +263,36 @@ async def handle_webhook_event(data: dict) -> dict:
                     print(f"   ❌ Unexpected: {r.text[:200]}")
                     await asyncio.sleep(0.3)
 
-    # ── B. Call Answered ─────────────────────────────────────────────────────
+    # ── B. Call Answered ────────────────────────────────────────────────────────────
     elif event_type == "call.answered":
         to_field = p.get("to", "")
         print(f"   📟 call_control_id: {call_control_id}")
         print(f"   📟 to: {to_field}")
         print(f"   📟 client_state present: {bool(client_state)}")
 
-        assistant_to_use = None
-        if client_state:
-            state_data = decode_client_state(client_state)
-            if state_data:
-                assistant_to_use = state_data.get("assistant_id")
-                print(f"   📟 Decoded assistant_id from client_state: {assistant_to_use}")
-            else:
-                print(f"   ⚠️  Failed to decode client_state")
+        state_data = decode_client_state(client_state) if client_state else {}
 
+        # ── Campaign call: record answered status, skip AI assistant ────────────
+        if _is_campaign_call(state_data):
+            contact_id  = state_data.get("contact_id")
+            campaign_id = state_data.get("campaign_id")
+            session_id  = p.get("call_session_id")
+            if contact_id:
+                _update_campaign_contact(
+                    contact_id,
+                    call_status     = "answered",
+                    call_session_id = session_id,
+                    answered_at     = _now_iso(),
+                )
+                print(f"   📊 Campaign contact {contact_id} → answered")
+            return {"status": "success"}
+
+        # ── Non-campaign call: existing AI assistant flow ─────────────────────
+        assistant_to_use = state_data.get("assistant_id") if state_data else None
         if not assistant_to_use:
             assistant_to_use = settings.ASSISTANT_ID
             print(f"   📟 Using default ASSISTANT_ID: {assistant_to_use}")
+
 
         if assistant_to_use:
             print(f"   🤖 Attaching AI Assistant: {assistant_to_use}")
@@ -272,7 +359,7 @@ async def handle_webhook_event(data: dict) -> dict:
         # Start call recording programmatically
         await start_recording(call_control_id)
 
-    # ── C. Call Hangup ───────────────────────────────────────────────────────
+    # ── C. Call Hangup ─────────────────────────────────────────────────────────────
     elif event_type in ("call.hangup", "hangup"):
         cause = p.get("sip_hangup_cause", "N/A")
         source = p.get("hangup_source", "N/A")
@@ -280,7 +367,54 @@ async def handle_webhook_event(data: dict) -> dict:
         print("\n📴 Call Ended")
         print("Cause :", cause)
         print("Source:", source)
-        
+
+        state_data = decode_client_state(client_state) if client_state else {}
+
+        # ── Campaign call hangup ──────────────────────────────────────────────────
+        if _is_campaign_call(state_data):
+            contact_id  = state_data.get("contact_id")
+            campaign_id = state_data.get("campaign_id")
+
+            if contact_id:
+                # Fetch current contact status — NEVER downgrade answered/voicemail
+                contact_res = (
+                    supabase.table("campaign_contacts")
+                    .select("call_status, call_session_id")
+                    .eq("id", contact_id)
+                    .limit(1)
+                    .execute()
+                )
+                current_contact_status = (
+                    contact_res.data[0].get("call_status") if contact_res.data else "calling"
+                )
+                stored_session_id = (
+                    contact_res.data[0].get("call_session_id") if contact_res.data else None
+                )
+
+                if current_contact_status in ("answered", "voicemail"):
+                    # Already correctly classified — just close out timestamps
+                    final_contact_status = current_contact_status
+                else:
+                    # Map raw SIP hangup cause to our status enum
+                    cause_upper = (cause or "").upper().replace(" ", "_")
+                    final_contact_status = _HANGUP_CAUSE_MAP.get(cause_upper, "failed")
+
+                _update_campaign_contact(
+                    contact_id,
+                    call_status     = final_contact_status,
+                    call_session_id = stored_session_id or p.get("call_session_id"),
+                    ended_at        = _now_iso(),
+                    hangup_cause    = cause if cause != "N/A" else None,
+                )
+                print(f"   📊 Campaign contact {contact_id} → {final_contact_status} (hangup: {cause})")
+
+                # Check whether the whole campaign is now done
+                if campaign_id:
+                    _check_campaign_completion(campaign_id)
+
+            return {"status": "success"}
+
+        # ── Non-campaign call hangup: existing AI call logic ─────────────────────
         # Finalize call row in Supabase
         try:
             current_call_res = supabase.table("calls").select("status").eq("call_session_id", p.get("call_session_id")).execute()
@@ -311,9 +445,24 @@ async def handle_webhook_event(data: dict) -> dict:
             except Exception as e:
                 print(f"   ⚠️  AI conversation transcript fetch error: {e}")
 
-    # ── D. AI Agent Transcript ───────────────────────────────────────────────
+    # ── C2. Answering Machine Detection ───────────────────────────────────────────
+    elif event_type == "call.machine.detection.ended":
+        amd_result = p.get("result", "").lower()  # 'machine' | 'human' | 'not_sure'
+        state_data = decode_client_state(client_state) if client_state else {}
+        print(f"   🤖 AMD result: {amd_result} | call_control_id: {call_control_id}")
+
+        if _is_campaign_call(state_data) and amd_result == "machine":
+            contact_id = state_data.get("contact_id")
+            if contact_id:
+                _update_campaign_contact(
+                    contact_id,
+                    call_status = "voicemail",
+                )
+                print(f"   📊 Campaign contact {contact_id} → voicemail (AMD)")
+
+    # ── D. AI Agent Transcript ─────────────────────────────────────────────────────────────
     elif event_type == "call.conversation.message":
-        print("\\n💬 TRANSCRIPT EVENT RECEIVED:")
+        print("\n💬 TRANSCRIPT EVENT RECEIVED:")
         
         message_obj = p.get("message", {})
         role = message_obj.get("role", "unknown")

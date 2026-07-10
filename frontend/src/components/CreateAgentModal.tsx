@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Loader2, Volume2 } from 'lucide-react';
+import { X, Loader2 } from 'lucide-react';
 import { createAgent, type Agent } from '../api/client';
 
 import { useAgentStore } from '../store/agentStore';
@@ -10,9 +10,6 @@ interface Props {
   onClose: (createdAgent?: Agent) => void;
 }
 
-const AVAILABLE_PHONE_NUMBERS = [
-  { value: '+918035736739', label: '+91 80357 36739' }
-];
 
 const CreateAgentModal = ({ onClose }: Props) => {
   const [loading, setLoading] = useState(false);

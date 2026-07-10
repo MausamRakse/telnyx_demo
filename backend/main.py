@@ -9,7 +9,22 @@ from services.call_service import handle_webhook_event, trigger_outbound_dial, h
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: could initialize database connection here
+    # Startup: dynamic ngrok URL detection if not configured in .env
+    if not settings.APP_PUBLIC_URL:
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.get("http://localhost:4040/api/tunnels", timeout=2.0)
+                if resp.status_code == 200:
+                    tunnels = resp.json().get("tunnels", [])
+                    for t in tunnels:
+                        public_url = t.get("public_url", "")
+                        if public_url.startswith("https"):
+                            settings.APP_PUBLIC_URL = public_url
+                            print(f"\n📡 Dynamically detected ngrok tunnel URL: {public_url}")
+                            break
+        except Exception as e:
+            print(f"\n⚠️  Could not dynamically detect ngrok tunnel URL: {e}")
     yield
     # Shutdown: close the async httpx client
     await telnyx.aclose()
@@ -57,9 +72,19 @@ async def vobiz_answer_handler(request: Request):
     form_dict = {k: v for k, v in form.items()}
     return await handle_vobiz_answer(form_dict)
 
+import os
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from fastapi import HTTPException
+
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+
 @app.get("/", tags=["Health"])
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint. Serves React index.html if frontend is built."""
+    index_path = os.path.join(frontend_dist, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
@@ -68,3 +93,24 @@ async def health_check():
         "assistant_id": settings.ASSISTANT_ID,
         "vobiz_domain": settings.VOBIZ_SIP_DOMAIN,
     }
+
+# Serve static files and handle client-side routing
+if os.path.exists(frontend_dist):
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="static")
+
+    @app.get("/{catchall:path}", tags=["Frontend"])
+    async def serve_react(catchall: str):
+        # Ignore backend API & documentation paths
+        if (catchall.startswith("api") or 
+            catchall.startswith("webhook") or 
+            catchall.startswith("dial") or 
+            catchall.startswith("vobiz_answer") or 
+            catchall.startswith("docs") or 
+            catchall.startswith("openapi.json")):
+            raise HTTPException(status_code=404)
+        
+        index_path = os.path.join(frontend_dist, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        raise HTTPException(status_code=404, detail="index.html not found")
+

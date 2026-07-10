@@ -278,7 +278,7 @@ const CallLogs = () => {
                     <td className="px-6 py-4 text-textMuted whitespace-nowrap">{formatDate(log.date)}</td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-bold tracking-wide ${
-                        log.status === 'Answered' ? 'bg-success/10 text-success' : 
+                        log.status === 'Completed' ? 'bg-success/10 text-success' : 
                         log.status === 'Not Answered' ? 'bg-error/10 text-error' : 
                         'bg-warning/10 text-warning animate-pulse'
                       }`}>

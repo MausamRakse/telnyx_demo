@@ -40,6 +40,14 @@ class Settings:
     APP_ENV: str               = os.getenv("APP_ENV", "development")
     APP_PORT: int              = int(os.getenv("APP_PORT", "8001"))
     LOG_LEVEL: str             = os.getenv("LOG_LEVEL", "INFO")
+    # Public URL used as the Telnyx webhook_url for campaign call legs
+    APP_PUBLIC_URL: str        = os.getenv("APP_PUBLIC_URL", "")
+
+    # ── Campaign Dialer ───────────────────────────────────────────────────────
+    # Max simultaneous in-flight calls across all campaigns
+    CAMPAIGN_MAX_CONCURRENT: int      = int(os.getenv("CAMPAIGN_MAX_CONCURRENT", "5"))
+    # Maximum calls initiated per second (token-bucket rate limit)
+    CAMPAIGN_CALLS_PER_SECOND: float  = float(os.getenv("CAMPAIGN_CALLS_PER_SECOND", "1"))
 
 
 # Singleton instance — import this everywhere

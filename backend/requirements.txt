@@ -7,3 +7,6 @@ python-dotenv==1.0.1
 telnyx                   # Official Telnyx Python SDK
 openai                   # For OpenAI-compatible streaming chat with Telnyx inference
 supabase==2.10.0         # Supabase Python client (Postgres persistence)
+python-multipart>=0.0.9  # FastAPI UploadFile support for CSV/XLSX import
+phonenumbers>=8.13.0     # E.164 phone number validation for campaign contacts
+openpyxl>=3.1.0          # Server-side XLSX parsing for campaign contact upload

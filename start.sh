@@ -17,8 +17,10 @@ echo ""
 
 # ── 1. Start FastAPI server in background ────────────────────────
 echo "▶  Starting FastAPI server on port 8001..."
+cd "$PROJECT_DIR/backend"
 uvicorn main:app --host 0.0.0.0 --port 8001 --reload &
 SERVER_PID=$!
+cd "$PROJECT_DIR"
 echo "   Server PID: $SERVER_PID"
 sleep 3
 

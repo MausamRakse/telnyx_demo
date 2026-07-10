@@ -152,11 +152,11 @@ const Dashboard = () => {
                         </td>
                         <td className="px-6 py-5 text-right">
                           <span className={`inline-flex items-center px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-tighter ${
-                            log.status === 'Answered' ? 'bg-success/10 text-success' : 
+                            log.status === 'Completed' ? 'bg-success/10 text-success' : 
                             log.status === 'Not Answered' ? 'bg-error/10 text-error' : 
                             'bg-warning/10 text-warning animate-pulse'
                           }`}>
-                            {log.status === 'Answered' ? 'SUCCESS' : log.status === 'Not Answered' ? 'FAILED' : 'SYNCING'}
+                            {log.status === 'Completed' ? 'SUCCESS' : log.status === 'Not Answered' ? 'FAILED' : 'SYNCING'}
                           </span>
                         </td>
                       </tr>
