@@ -84,11 +84,12 @@ class CampaignDialer:
             from_number = campaign["from_number"]
             conn_id     = campaign["connection_id"]
 
-            # Embed campaign + contact IDs in client_state so webhooks can route
+            # Embed campaign + contact IDs + assistant ID in client_state so webhooks can route
             client_state = _encode_client_state({
-                "campaign_id": campaign_id,
-                "contact_id":  contact_id,
-                "type":        "campaign_call",
+                "campaign_id":  campaign_id,
+                "contact_id":   contact_id,
+                "assistant_id": campaign.get("assistant_id", ""),
+                "type":         "campaign_call",
             })
 
             # Build webhook_url — must be the public URL Telnyx can reach
@@ -272,6 +273,14 @@ async def start_campaign_dialer(campaign_id: str) -> None:
         raise ValueError(f"Campaign {campaign_id} not found")
 
     campaign = campaign_result.data[0]
+
+    # Fail-fast guard: refuse to start if no assistant is assigned
+    if not campaign.get("assistant_id"):
+        raise ValueError(
+            f"Campaign {campaign_id} has no assistant_id — refusing to start dialer. "
+            "Assign an AI Assistant to this campaign first."
+        )
+
     max_concurrent   = campaign.get("max_concurrent", settings.CAMPAIGN_MAX_CONCURRENT)
     calls_per_second = campaign.get("calls_per_second", settings.CAMPAIGN_CALLS_PER_SECOND)
 

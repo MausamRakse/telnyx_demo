@@ -14,15 +14,27 @@ from datetime import datetime
 
 class CampaignCreate(BaseModel):
     name: str
+    assistant_id: str                  # Required — Telnyx assistant-xxxx ID
     connection_id: str                 # Telnyx Call Control App ID
     from_number: str                   # E.164 outbound caller ID
     max_concurrent: int = 5
     calls_per_second: float = 1.0
 
+    @field_validator("assistant_id")
+    @classmethod
+    def assistant_id_not_blank(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError(
+                "assistant_id is required. Select an AI Assistant before creating "
+                "a campaign — otherwise answered calls will have no agent on the line."
+            )
+        return v.strip()
+
 
 class CampaignResponse(BaseModel):
     id: str
     name: str
+    assistant_id: Optional[str] = None # Telnyx AI Assistant ID assigned to this campaign
     status: str                        # draft | running | paused | completed | stopped
     connection_id: str
     from_number: str

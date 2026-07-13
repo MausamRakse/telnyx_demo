@@ -86,6 +86,7 @@ def create_campaign(data: CampaignCreate) -> dict:
     """Insert a new campaign row with status='draft'."""
     row = {
         "name":             data.name,
+        "assistant_id":     data.assistant_id,
         "status":           "draft",
         "connection_id":    data.connection_id,
         "from_number":      data.from_number,
@@ -220,6 +221,19 @@ def validate_transition(current: str, target: str) -> None:
         raise ValueError(
             f"Invalid campaign status transition: '{current}' → '{target}'. "
             f"Allowed from '{current}': {allowed or ['(none — terminal state)']}"
+        )
+
+
+def validate_ready_to_run(campaign: dict) -> None:
+    """
+    Raise ValueError if the campaign has no AI Assistant assigned.
+    Called before starting the dialer to prevent silent calls.
+    """
+    if not campaign.get("assistant_id"):
+        raise ValueError(
+            "This campaign has no AI Assistant assigned. Select an assistant "
+            "before starting the campaign — otherwise answered calls will have "
+            "no agent on the line."
         )
 
 

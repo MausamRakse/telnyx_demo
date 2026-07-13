@@ -199,6 +199,7 @@ export const getMeetingLogs = async (): Promise<MeetingLog[]> => {
 
 export interface CampaignCreatePayload {
   name: string;
+  assistant_id: string;       // Required — Telnyx assistant ID
   connection_id: string;
   from_number: string;
   max_concurrent?: number;
@@ -208,6 +209,7 @@ export interface CampaignCreatePayload {
 export interface Campaign {
   id: string;
   name: string;
+  assistant_id?: string;      // Telnyx AI Assistant ID
   status: 'draft' | 'running' | 'paused' | 'completed' | 'stopped';
   connection_id: string;
   from_number: string;

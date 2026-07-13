@@ -9,9 +9,9 @@ import toast from 'react-hot-toast';
 import {
   listCampaigns, createCampaignV2, getCampaign, uploadContacts,
   startCampaign, pauseCampaign, stopCampaign, getCampaignProgress,
-  getCampaignContacts, reconcileCampaign,
+  getCampaignContacts, reconcileCampaign, listAgents,
   type Campaign, type CampaignContact, type CampaignProgress,
-  type ContactUploadResult, type FailedRow, type CDRReconcileResult,
+  type ContactUploadResult, type FailedRow, type CDRReconcileResult, type Agent,
 } from '../api/client';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -405,6 +405,9 @@ const CampaignDetail = ({
           </h1>
           <p className="text-textMuted text-[13px] mt-1 font-mono">
             From: {campaign.from_number} · {progress.total_contacts} contacts ·
+            {campaign.assistant_id && (
+              <> Agent: <span className="text-primary font-semibold">{campaign.assistant_id}</span> · </>
+            )}
             Rate: {campaign.calls_per_second}/s · Max concurrent: {campaign.max_concurrent}
           </p>
         </div>
@@ -619,9 +622,21 @@ const NewCampaignWizard = ({
   const [step, setStep] = useState<Step>(1);
   const [saving, setSaving] = useState(false);
 
+  // AI Agents — loaded on mount for the assistant selector
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(true);
+
+  useEffect(() => {
+    listAgents()
+      .then((a: Agent[]) => setAgents(a))
+      .catch(() => setAgents([]))
+      .finally(() => setAgentsLoading(false));
+  }, []);
+
   // Step 1 — Campaign details
   const [form, setForm] = useState({
     name:             '',
+    assistant_id:     '',
     connection_id:    '2994230404518512614',
     from_number:      '+918071581212',
     max_concurrent:   5,
@@ -634,7 +649,7 @@ const NewCampaignWizard = ({
   const [uploadResult, setUploadResult] = useState<ContactUploadResult | null>(null);
   const [uploadLoading, setUploadLoading] = useState(false);
 
-  const step1Valid = form.name && form.connection_id && form.from_number;
+  const step1Valid = form.name && form.connection_id && form.from_number && form.assistant_id;
 
   const handleStep1Next = async () => {
     if (!step1Valid) { toast.error('Fill in all required fields'); return; }
@@ -642,6 +657,7 @@ const NewCampaignWizard = ({
     try {
       const res = await createCampaignV2({
         name:             form.name,
+        assistant_id:     form.assistant_id,
         connection_id:    form.connection_id,
         from_number:      form.from_number,
         max_concurrent:   form.max_concurrent,
@@ -746,6 +762,35 @@ const NewCampaignWizard = ({
               value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })}
             />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[13px] font-bold text-surface-foreground flex items-center gap-1">
+              <Bot className="w-3.5 h-3.5 text-primary" />
+              AI Assistant <span className="text-error">*</span>
+            </label>
+            {agentsLoading ? (
+              <div className="w-full h-12 rounded-xl border border-border flex items-center px-4 text-textMuted text-[13px] gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Loading assistants...
+              </div>
+            ) : agents.length === 0 ? (
+              <div className="p-3 bg-warning/5 border border-warning/20 rounded-xl text-[12px] text-textMuted flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-warning flex-shrink-0" />
+                No AI Assistants found — create one in the AI Agents section first.
+              </div>
+            ) : (
+              <select
+                className="w-full h-12 px-4 rounded-xl border border-border focus:border-primary focus:ring-4 focus:ring-primary/5 outline-none transition-all bg-surface text-surface-foreground appearance-none cursor-pointer"
+                value={form.assistant_id}
+                onChange={e => setForm({ ...form, assistant_id: e.target.value })}
+              >
+                <option value="">— Select AI Assistant —</option>
+                {agents.map((a: Agent) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+            )}
+            <p className="text-[11px] text-textMuted">This assistant will handle every call in this campaign.</p>
           </div>
 
           <div className="space-y-2">
@@ -926,6 +971,7 @@ const NewCampaignWizard = ({
           <div className="space-y-3">
             {[
               { label: 'Campaign Name', value: form.name },
+              { label: 'AI Assistant', value: agents.find((a: Agent) => a.id === form.assistant_id)?.name || form.assistant_id || '—' },
               { label: 'Connection ID', value: form.connection_id, mono: true },
               { label: 'From Number', value: form.from_number, mono: true },
               { label: 'Max Concurrent', value: `${form.max_concurrent} calls` },

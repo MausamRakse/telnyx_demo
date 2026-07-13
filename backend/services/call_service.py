@@ -272,11 +272,30 @@ async def handle_webhook_event(data: dict) -> dict:
 
         state_data = decode_client_state(client_state) if client_state else {}
 
-        # ── Campaign call: record answered status, skip AI assistant ────────────
+        # ── Campaign call: attach AI assistant + record answered status ──────────
         if _is_campaign_call(state_data):
-            contact_id  = state_data.get("contact_id")
-            campaign_id = state_data.get("campaign_id")
-            session_id  = p.get("call_session_id")
+            contact_id   = state_data.get("contact_id")
+            campaign_id  = state_data.get("campaign_id")
+            session_id   = p.get("call_session_id")
+            assistant_id = state_data.get("assistant_id")
+
+            # ── Fallback: look up assistant_id from campaigns table if missing ──
+            if not assistant_id and campaign_id:
+                try:
+                    camp_res = (
+                        supabase.table("campaigns")
+                        .select("assistant_id")
+                        .eq("id", campaign_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    if camp_res.data:
+                        assistant_id = camp_res.data[0].get("assistant_id")
+                        print(f"   🔍 Resolved assistant_id from DB: {assistant_id}")
+                except Exception as e:
+                    print(f"   ⚠️  Could not fetch campaign assistant_id from DB: {e}")
+
+            # ── Update contact status ──────────────────────────────────────────
             if contact_id:
                 _update_campaign_contact(
                     contact_id,
@@ -285,7 +304,33 @@ async def handle_webhook_event(data: dict) -> dict:
                     answered_at     = _now_iso(),
                 )
                 print(f"   📊 Campaign contact {contact_id} → answered")
+
+            # ── Attach AI Assistant ────────────────────────────────────────────
+            if assistant_id:
+                print(f"   🤖 Attaching AI Assistant to campaign call: {assistant_id}")
+                r = await telnyx.post(
+                    f"/calls/{call_control_id}/actions/ai_assistant_start",
+                    json={"assistant": {"id": assistant_id}}
+                )
+                print(f"   AI Assistant start → {r.status_code}")
+                if r.status_code not in (200, 201):
+                    print(f"   ⚠️  ai_assistant_start error: {r.text[:300]}")
+                else:
+                    print("   ✅ AI Agent attached to campaign call successfully!")
+            else:
+                print("   ⚠️  No assistant_id for campaign call — call will be silent!")
+
+            # ── Start transcription + recording (parity with non-campaign flow) ─
+            await start_transcription(
+                call_control_id = call_control_id,
+                call_leg_id     = p.get("call_leg_id"),
+                call_session_id = session_id,
+                direction       = direction,
+            )
+            await start_recording(call_control_id)
+
             return {"status": "success"}
+
 
         # ── Non-campaign call: existing AI assistant flow ─────────────────────
         assistant_to_use = state_data.get("assistant_id") if state_data else None

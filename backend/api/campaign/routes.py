@@ -35,7 +35,20 @@ async def create_campaign(body: CampaignCreate):
         row = campaign_service.create_campaign(body)
         return {"success": True, "campaign": row}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        err = str(e)
+        # PGRST204 = column missing from DB schema cache → migration not run
+        if "PGRST204" in err or "assistant_id" in err and "column" in err.lower():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Database migration not applied: the 'assistant_id' column is "
+                    "missing from the 'campaigns' table. "
+                    "Please run migration 0003_campaign_assistant.sql in the "
+                    "Supabase Dashboard → SQL Editor, then run: "
+                    "NOTIFY pgrst, 'reload schema';"
+                )
+            )
+        raise HTTPException(status_code=500, detail=err)
 
 
 # ── List campaigns ────────────────────────────────────────────────────────────
@@ -114,6 +127,9 @@ async def start_campaign(campaign_id: str):
 
         # Validate state machine transition
         campaign_service.validate_transition(current_status, "running")
+
+        # Guard: campaign must have an AI Assistant — prevent silent calls
+        campaign_service.validate_ready_to_run(campaign)
 
         # Update DB status
         campaign_service._set_campaign_status(
