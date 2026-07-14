@@ -108,6 +108,12 @@ export const getCampaignContacts = (
 export const reconcileCampaign = (id: string): Promise<CDRReconcileResult> =>
   api.post(`campaigns/${id}/reconcile`).then(r => r.data);
 
+export const getCampaignContactTranscript = (
+  campaignId: string,
+  contactId: string,
+): Promise<{ contact_id: string; call_session_id: string | null; transcript: string | null; messages: any[]; note?: string }> =>
+  api.get(`campaigns/${campaignId}/contacts/${contactId}/transcript`).then(r => r.data);
+
 // ── Interfaces ─────────────────────────────────────────────────────────────────
 
 export interface CreateAgentPayload {
@@ -244,6 +250,9 @@ export interface CampaignContact {
   hangup_cause?: string;
   retry_count: number;
   created_at?: string;
+  // Enriched fields returned by the contacts endpoint
+  recording_url?: string | null;
+  transcript?: string | null;
 }
 
 export interface CampaignProgress {

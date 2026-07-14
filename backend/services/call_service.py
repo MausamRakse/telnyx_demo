@@ -11,6 +11,7 @@ from services.transcript_service import (
     start_transcription,
     handle_transcription_event,
     fetch_ai_conversation_transcript,
+    fetch_transcript_with_retries,
 )
 
 
@@ -211,8 +212,27 @@ async def handle_webhook_event(data: dict) -> dict:
         print(f"   📞 Call initiated from {from_num} to {p.get('to')}")
         print(f"   call_control_id: {call_control_id}")
 
-        # ── Campaign call: update contact to 'calling' status ──────────────────
         state_data = decode_client_state(client_state) if client_state else {}
+
+        # ── Persist call row to Supabase for ALL calls (campaign + non-campaign) ──
+        # This ensures get_or_create_call_id resolves correctly later for
+        # transcript_store and recording_store look-ups.
+        try:
+            supabase.table("calls").upsert({
+                "call_session_id": p.get("call_session_id"),
+                "call_control_id": call_control_id if call_control_id != "N/A" else None,
+                "direction":       direction,
+                "from_number":     from_num,
+                "to_number":       p.get("to"),
+                "status":          "initiated",
+                "started_at":      p.get("start_time") or _now_iso(),
+                "created_at":      _now_iso(),
+            }, on_conflict="call_session_id").execute()
+            print("   💾 Call row saved to Supabase")
+        except Exception as e:
+            print(f"   ⚠️  calls DB insert failed (non-fatal): {e}")
+
+        # ── Campaign call: update contact to 'calling' status ──────────────────
         if _is_campaign_call(state_data):
             contact_id = state_data.get("contact_id")
             if contact_id:
@@ -224,22 +244,6 @@ async def handle_webhook_event(data: dict) -> dict:
                 )
                 print(f"   📊 Campaign contact {contact_id} → calling")
             return {"status": "success"}
-
-        # Persist call row to Supabase for BOTH incoming and outgoing
-        try:
-            supabase.table("calls").upsert({
-                "call_session_id": p.get("call_session_id"),
-                "call_control_id": call_control_id,
-                "direction":       direction,
-                "from_number":     from_num,
-                "to_number":       p.get("to"),
-                "status":          "initiated",
-                "started_at":      p.get("start_time") or _now_iso(),
-                "created_at":      _now_iso(),
-            }, on_conflict="call_session_id").execute()
-            print("   💾 Call row saved to Supabase")
-        except Exception as e:
-            print(f"   ⚠️  calls DB insert failed (non-fatal): {e}")
 
         if direction == "incoming":
             for attempt in range(1, 6):
@@ -304,6 +308,31 @@ async def handle_webhook_event(data: dict) -> dict:
                     answered_at     = _now_iso(),
                 )
                 print(f"   📊 Campaign contact {contact_id} → answered")
+
+            # ── Persist campaign call row as answered in calls table ──────────
+            try:
+                update_data: dict = {
+                    "status":      "answered",
+                    "answered_at": _now_iso(),
+                }
+                # Resolve local assistant UUID if available
+                if assistant_id:
+                    ast_result = (
+                        supabase.table("assistants")
+                        .select("id")
+                        .eq("telnyx_assistant_id", assistant_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    if ast_result.data:
+                        update_data["assistant_id"] = ast_result.data[0]["id"]
+                if session_id:
+                    supabase.table("calls").update(update_data).eq(
+                        "call_session_id", session_id
+                    ).execute()
+                    print(f"   💾 Campaign call row updated to 'answered' | session={session_id}")
+            except Exception as e:
+                print(f"   ⚠️  Campaign call update (answered) failed (non-fatal): {e}")
 
             # ── Attach AI Assistant ────────────────────────────────────────────
             if assistant_id:
@@ -435,6 +464,8 @@ async def handle_webhook_event(data: dict) -> dict:
                 stored_session_id = (
                     contact_res.data[0].get("call_session_id") if contact_res.data else None
                 )
+                # Use stored_session_id first, then fall back to webhook payload
+                effective_session_id = stored_session_id or p.get("call_session_id")
 
                 if current_contact_status in ("answered", "voicemail"):
                     # Already correctly classified — just close out timestamps
@@ -447,11 +478,39 @@ async def handle_webhook_event(data: dict) -> dict:
                 _update_campaign_contact(
                     contact_id,
                     call_status     = final_contact_status,
-                    call_session_id = stored_session_id or p.get("call_session_id"),
+                    call_session_id = effective_session_id,
                     ended_at        = _now_iso(),
                     hangup_cause    = cause if cause != "N/A" else None,
                 )
                 print(f"   📊 Campaign contact {contact_id} → {final_contact_status} (hangup: {cause})")
+
+                # ── Update calls table for campaign call ─────────────────────
+                if effective_session_id:
+                    try:
+                        call_final_status = "completed" if final_contact_status in ("answered", "voicemail") else "no_answer"
+                        supabase.table("calls").update({
+                            "status":        call_final_status,
+                            "ended_at":      _now_iso(),
+                            "hangup_cause":  cause if cause != "N/A" else None,
+                            "hangup_source": source if source != "N/A" else None,
+                        }).eq("call_session_id", effective_session_id).execute()
+                        print(f"   💾 Campaign call finalized | status={call_final_status} | session={effective_session_id}")
+                    except Exception as e:
+                        print(f"   ⚠️  Campaign call update (hangup) failed (non-fatal): {e}")
+
+                # ── Kick off background transcript fetch with retries ────────
+                # Only fetch if call was answered (has AI conversation messages)
+                if effective_session_id and final_contact_status in ("answered", "voicemail"):
+                    print(f"   📜 Scheduling background transcript fetch for campaign call | session={effective_session_id}")
+                    asyncio.create_task(
+                        fetch_transcript_with_retries(
+                            call_session_id=effective_session_id,
+                            retries=5,
+                            delay_secs=3.0,
+                            campaign_id=campaign_id,
+                            contact_id=contact_id,
+                        )
+                    )
 
                 # Check whether the whole campaign is now done
                 if campaign_id:
@@ -483,12 +542,17 @@ async def handle_webhook_event(data: dict) -> dict:
 
 
         # Fetch full AI conversation transcript and store it (Approach B)
+        # Uses background retry task to handle Telnyx processing delays.
         session_id = p.get("call_session_id")
         if session_id:
-            try:
-                await fetch_ai_conversation_transcript(session_id)
-            except Exception as e:
-                print(f"   ⚠️  AI conversation transcript fetch error: {e}")
+            print(f"   📜 Scheduling background transcript fetch for non-campaign call | session={session_id}")
+            asyncio.create_task(
+                fetch_transcript_with_retries(
+                    call_session_id=session_id,
+                    retries=5,
+                    delay_secs=3.0,
+                )
+            )
 
     # ── C2. Answering Machine Detection ───────────────────────────────────────────
     elif event_type == "call.machine.detection.ended":

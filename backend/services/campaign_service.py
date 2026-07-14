@@ -181,7 +181,14 @@ def get_campaign_progress(campaign_id: str) -> CampaignProgress:
 
 
 def get_campaign_contacts(campaign_id: str, page: int = 1, page_size: int = 50) -> dict:
-    """Return a paginated list of contacts for a campaign."""
+    """
+    Return a paginated list of contacts for a campaign, enriched with
+    recording URLs and formatted transcript text for contacts that were answered.
+
+    Each contact in the response may have these extra fields:
+        recording_url  — playback proxy URL or None
+        transcript     — formatted "Speaker: text\\n..." string or None
+    """
     _validate_campaign_exists(campaign_id)
     offset = (page - 1) * page_size
     result = (
@@ -200,12 +207,78 @@ def get_campaign_contacts(campaign_id: str, page: int = 1, page_size: int = 50) 
         .execute()
     )
     total = count_result.count if count_result.count is not None else len(result.data or [])
+
+    contacts = result.data or []
+
+    # ── Enrich each contact with recording URL and transcript ─────────────────
+    for contact in contacts:
+        contact["recording_url"] = None
+        contact["transcript"]    = None
+
+        session_id = contact.get("call_session_id")
+        if not session_id:
+            continue
+
+        # Resolve internal calls.id for this session
+        try:
+            call_res = (
+                supabase.table("calls")
+                .select("id")
+                .eq("call_session_id", session_id)
+                .limit(1)
+                .execute()
+            )
+            call_id = call_res.data[0]["id"] if call_res.data else None
+        except Exception:
+            call_id = None
+
+        if not call_id:
+            continue
+
+        # Attach recording URL via the proxy endpoint
+        try:
+            rec_res = (
+                supabase.table("recordings")
+                .select("recording_id, mp3_url, wav_url, duration_secs")
+                .eq("call_id", call_id)
+                .limit(1)
+                .execute()
+            )
+            if rec_res.data:
+                rec = rec_res.data[0]
+                rid = rec.get("recording_id")
+                if rid:
+                    contact["recording_url"] = f"/api/logs/recordings/{rid}/play"
+                else:
+                    contact["recording_url"] = rec.get("mp3_url") or rec.get("wav_url")
+        except Exception:
+            pass
+
+        # Attach formatted transcript
+        try:
+            tr_res = (
+                supabase.table("transcript_messages")
+                .select("speaker, text")
+                .eq("call_id", call_id)
+                .order("occurred_at")
+                .execute()
+            )
+            if tr_res.data:
+                lines = [
+                    f"{m['speaker']}: {m['text']}"
+                    for m in tr_res.data
+                    if (m.get("text") or "").strip()
+                ]
+                contact["transcript"] = "\n".join(lines) if lines else None
+        except Exception:
+            pass
+
     return {
         "campaign_id": campaign_id,
         "total": total,
         "page": page,
         "page_size": page_size,
-        "contacts": result.data or [],
+        "contacts": contacts,
     }
 
 

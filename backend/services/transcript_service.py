@@ -10,8 +10,11 @@ Handles all transcript-related logic:
   Approach B (Post-call AI Conversations API):
     fetch_ai_conversation_transcript() → GET /v2/ai/conversations + /messages
                                          called on call.hangup
+    fetch_transcript_with_retries()    → wraps Approach B with retry + backoff
+                                         handles timing delays from Telnyx side
 """
 
+import asyncio
 from typing import Optional
 from fastapi import HTTPException
 
@@ -194,6 +197,68 @@ async def fetch_ai_conversation_transcript(call_session_id: str) -> Optional[dic
     record = upsert_full_transcript(call_session_id, messages)
     print(f"   ✅ Transcript stored: {len(messages)} messages for session {call_session_id}")
     return record
+
+
+async def fetch_transcript_with_retries(
+    call_session_id: str,
+    retries: int = 5,
+    delay_secs: float = 3.0,
+    campaign_id: Optional[str] = None,
+    contact_id: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Retry wrapper around fetch_ai_conversation_transcript.
+
+    Telnyx AI Conversations may not be immediately available when call.hangup
+    fires, so we retry with configurable delay. This prevents silent failures
+    due to timing issues.
+
+    Args:
+        call_session_id: Telnyx call session ID to fetch transcript for.
+        retries:         Max number of attempts (default 5).
+        delay_secs:      Seconds to wait between retries (default 3.0).
+        campaign_id:     Optional — used for logging context.
+        contact_id:      Optional — used for logging context.
+
+    Returns the stored transcript dict on success, or None if all retries fail.
+    """
+    if not call_session_id:
+        print("   ⚠️  fetch_transcript_with_retries: no call_session_id provided")
+        return None
+
+    ctx = ""
+    if campaign_id:
+        ctx += f" | campaign={campaign_id[:8]}"
+    if contact_id:
+        ctx += f" | contact={contact_id[:8]}"
+
+    print(f"\n🔄 Transcript fetch with retries: session={call_session_id}{ctx} | max_retries={retries}")
+
+    for attempt in range(1, retries + 1):
+        try:
+            # Wait before attempting (gives Telnyx time to process the conversation)
+            if attempt > 1:
+                wait = delay_secs * attempt  # progressive backoff: 3s, 6s, 9s …
+                print(f"   ⏳ Retry {attempt}/{retries}: waiting {wait:.0f}s…")
+                await asyncio.sleep(wait)
+            else:
+                # First attempt: short initial delay to let the call fully hang up
+                await asyncio.sleep(delay_secs)
+
+            record = await fetch_ai_conversation_transcript(call_session_id)
+
+            if record and record.get("messages"):
+                msg_count = len(record["messages"])
+                print(f"   ✅ Transcript retrieved on attempt {attempt}: {msg_count} messages{ctx}")
+                return record
+            else:
+                print(f"   ℹ️  Attempt {attempt}/{retries}: no messages yet for session {call_session_id}{ctx}")
+
+        except Exception as e:
+            print(f"   ⚠️  Attempt {attempt}/{retries} error: {e}{ctx}")
+
+    print(f"   ❌ All {retries} transcript fetch attempts exhausted for session {call_session_id}{ctx}")
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

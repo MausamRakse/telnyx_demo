@@ -3,16 +3,17 @@ import {
   Megaphone, Plus, Play, Pause, Square, RefreshCw, Eye, ArrowLeft,
   Upload, CheckCircle2, AlertCircle, Clock, PhoneCall,
   PhoneOff, PhoneMissed, Bot, Loader2, ChevronLeft, ChevronRight,
-  BarChart3, FileText, X, Info
+  BarChart3, FileText, X, Info, PlayCircle, Download, MessageSquare
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   listCampaigns, createCampaignV2, getCampaign, uploadContacts,
   startCampaign, pauseCampaign, stopCampaign, getCampaignProgress,
-  getCampaignContacts, reconcileCampaign, listAgents,
+  getCampaignContacts, reconcileCampaign, listAgents, getCampaignContactTranscript,
   type Campaign, type CampaignContact, type CampaignProgress,
   type ContactUploadResult, type FailedRow, type CDRReconcileResult, type Agent,
 } from '../api/client';
+import TranscriptModal from '../components/TranscriptModal';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -304,6 +305,18 @@ const CampaignDetail = ({
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const PAGE_SIZE = 50;
 
+  // ── Audio player state ───────────────────────────────────────────────────
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [activeAudioContact, setActiveAudioContact] = useState<CampaignContact | null>(null);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [isAudioLoading, setIsAudioLoading] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  // ── Transcript modal state ───────────────────────────────────────────────
+  const [transcriptContact, setTranscriptContact] = useState<CampaignContact | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState<string | null>(null); // contact_id
+
   const loadDetail = useCallback(async () => {
     try {
       const [campRes, progRes, contactsRes] = await Promise.all([
@@ -365,6 +378,72 @@ const CampaignDetail = ({
       toast.error('CDR reconciliation failed');
     } finally {
       setCdrLoading(false);
+    }
+  };
+
+  // ── Audio player handlers ─────────────────────────────────────────────────
+  const handlePlayRecording = (contact: CampaignContact) => {
+    if (!contact.recording_url) return;
+    if (activeAudioContact?.id === contact.id) {
+      // Toggle play/pause
+      if (audioRef.current) {
+        if (isAudioPlaying) audioRef.current.pause();
+        else audioRef.current.play().catch(console.error);
+      }
+      return;
+    }
+    setActiveAudioContact(contact);
+    setIsAudioLoading(true);
+    setIsAudioPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+  };
+
+  useEffect(() => {
+    if (activeAudioContact?.recording_url && audioRef.current) {
+      audioRef.current.src = activeAudioContact.recording_url;
+      audioRef.current.load();
+      audioRef.current.play().catch(console.error);
+    }
+  }, [activeAudioContact]);
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const t = Number(e.target.value);
+    setCurrentTime(t);
+    if (audioRef.current) audioRef.current.currentTime = t;
+  };
+
+  const formatAudioTime = (secs: number) => {
+    if (!secs || isNaN(secs)) return '0:00';
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  // ── On-demand transcript fetch ────────────────────────────────────────────
+  const handleViewTranscript = async (contact: CampaignContact) => {
+    // If transcript already available, open modal immediately
+    if (contact.transcript) {
+      setTranscriptContact(contact);
+      return;
+    }
+    // Otherwise, fetch live from backend
+    setTranscriptLoading(contact.id);
+    try {
+      const result = await getCampaignContactTranscript(campaignId, contact.id);
+      if (result.transcript) {
+        // Update the contact in state with fetched transcript
+        setContacts(prev => prev.map(c =>
+          c.id === contact.id ? { ...c, transcript: result.transcript } : c
+        ));
+        setTranscriptContact({ ...contact, transcript: result.transcript });
+      } else {
+        toast.error(result.note || 'No transcript available yet');
+      }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || 'Failed to fetch transcript');
+    } finally {
+      setTranscriptLoading(null);
     }
   };
 
@@ -525,11 +604,12 @@ const CampaignDetail = ({
         </div>
       )}
 
-      {/* Contacts table */}
+      {/* Contacts / Call Log table */}
       <div className="bg-surface border border-border rounded-2xl shadow-sm overflow-hidden">
         <div className="p-5 border-b border-border flex items-center justify-between">
-          <h3 className="font-bold text-surface-foreground">
-            Contact Statuses
+          <h3 className="font-bold text-surface-foreground flex items-center gap-2">
+            <PhoneCall className="w-4 h-4 text-primary" />
+            Call Log
             {campaign.status === 'running' && (
               <span className="ml-2 text-[11px] font-normal text-success animate-pulse">● Live updates every 5s</span>
             )}
@@ -540,8 +620,8 @@ const CampaignDetail = ({
           <table className="w-full text-left text-[13px]">
             <thead className="bg-muted/30 border-b border-border">
               <tr>
-                {['Phone', 'Name', 'Status', 'Dialed At', 'Answered At', 'Duration', 'Hangup Cause'].map(h => (
-                  <th key={h} className="px-5 py-3 font-semibold text-textMuted uppercase text-[11px] tracking-wider">{h}</th>
+                {['Phone', 'Name', 'Status', 'Dialed At', 'Answered At', 'Duration', 'Hangup Cause', 'Recording', 'Transcript'].map(h => (
+                  <th key={h} className="px-4 py-3 font-semibold text-textMuted uppercase text-[11px] tracking-wider whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -551,28 +631,119 @@ const CampaignDetail = ({
                 const durSecs = c.answered_at && c.ended_at
                   ? Math.round((new Date(c.ended_at).getTime() - new Date(c.answered_at).getTime()) / 1000)
                   : null;
+                const isAnswered = c.call_status === 'answered' || c.call_status === 'voicemail';
+                const isActiveAudio = activeAudioContact?.id === c.id;
                 return (
                   <tr key={c.id} className="hover:bg-muted/10 transition-colors">
-                    <td className="px-5 py-3 font-mono text-[13px]">{c.phone_number}</td>
-                    <td className="px-5 py-3 text-textMuted">{c.name || '—'}</td>
-                    <td className="px-5 py-3">
+                    <td className="px-4 py-3 font-mono text-[13px]">{c.phone_number}</td>
+                    <td className="px-4 py-3 text-textMuted">{c.name || '—'}</td>
+                    <td className="px-4 py-3">
                       <span className={`flex items-center gap-1.5 font-semibold ${scfg.color}`}>
                         {scfg.icon}
                         {scfg.label}
                       </span>
                     </td>
-                    <td className="px-5 py-3 text-textMuted">{fmtDate(c.dialed_at)}</td>
-                    <td className="px-5 py-3 text-textMuted">{fmtDate(c.answered_at)}</td>
-                    <td className="px-5 py-3 text-textMuted">
+                    <td className="px-4 py-3 text-textMuted whitespace-nowrap">{fmtDate(c.dialed_at)}</td>
+                    <td className="px-4 py-3 text-textMuted whitespace-nowrap">{fmtDate(c.answered_at)}</td>
+                    <td className="px-4 py-3 text-textMuted">
                       {durSecs !== null ? `${durSecs}s` : '—'}
                     </td>
-                    <td className="px-5 py-3 text-textMuted font-mono text-[12px]">{c.hangup_cause || '—'}</td>
+                    <td className="px-4 py-3 text-textMuted font-mono text-[12px]">{c.hangup_cause || '—'}</td>
+
+                    {/* Recording column */}
+                    <td className="px-4 py-3">
+                      {!isAnswered ? (
+                        <span className="text-textMuted/40 text-[13px]">—</span>
+                      ) : !c.recording_url ? (
+                        <span className="text-textMuted text-[12px] italic">Pending…</span>
+                      ) : isActiveAudio ? (
+                        /* Inline mini-player */
+                        <div className="flex items-center gap-1.5 bg-muted/95 border border-border/80 rounded-full px-2 py-0.5 w-max shadow-sm animate-in zoom-in-95 duration-200">
+                          <button
+                            onClick={() => {
+                              if (audioRef.current) {
+                                if (isAudioPlaying) audioRef.current.pause();
+                                else audioRef.current.play().catch(console.error);
+                              }
+                            }}
+                            className="w-5 h-5 rounded-full bg-primary text-white flex items-center justify-center hover:scale-105 active:scale-95 transition-all flex-shrink-0"
+                            title={isAudioPlaying ? 'Pause' : 'Play'}
+                          >
+                            {isAudioLoading ? (
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                            ) : isAudioPlaying ? (
+                              <Pause className="w-2.5 h-2.5 fill-current" />
+                            ) : (
+                              <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
+                            )}
+                          </button>
+                          <input
+                            type="range"
+                            min="0"
+                            max={duration || 0}
+                            value={currentTime}
+                            onChange={handleSeek}
+                            className="h-0.5 w-16 rounded bg-surface/85 cursor-pointer accent-primary flex-shrink-0"
+                            title="Seek"
+                          />
+                          <span className="text-[9px] font-mono text-surface-foreground/80 whitespace-nowrap select-none font-bold">
+                            {formatAudioTime(currentTime)}/{formatAudioTime(duration)}
+                          </span>
+                          <button
+                            onClick={() => setActiveAudioContact(null)}
+                            className="p-0.5 rounded-full text-textMuted hover:bg-muted hover:text-primary transition-all border-l border-border/60 pl-1"
+                            title="Close Player"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handlePlayRecording(c)}
+                          className="inline-flex items-center gap-1.5 text-primary hover:text-primary/80 font-medium transition-colors text-[13px]"
+                          title="Play Recording"
+                        >
+                          <PlayCircle className="w-4 h-4" />
+                          Play
+                        </button>
+                      )}
+                    </td>
+
+                    {/* Transcript column */}
+                    <td className="px-4 py-3">
+                      {!isAnswered ? (
+                        <span className="text-textMuted/40 text-[13px]">—</span>
+                      ) : transcriptLoading === c.id ? (
+                        <span className="inline-flex items-center gap-1.5 text-primary text-[13px]">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Loading…
+                        </span>
+                      ) : c.transcript ? (
+                        <button
+                          onClick={() => handleViewTranscript(c)}
+                          className="inline-flex items-center gap-1.5 text-primary hover:text-primary/80 font-medium transition-colors text-[13px]"
+                          title="View Transcript"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                          View
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleViewTranscript(c)}
+                          className="inline-flex items-center gap-1.5 text-textMuted hover:text-primary font-medium transition-colors text-[13px]"
+                          title="Fetch Transcript"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          Fetch
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
               {contacts.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-10 text-center text-textMuted">
+                  <td colSpan={9} className="px-5 py-10 text-center text-textMuted">
                     No contacts yet — upload a CSV first
                   </td>
                 </tr>
@@ -602,6 +773,42 @@ const CampaignDetail = ({
           </div>
         )}
       </div>
+
+      {/* Hidden audio element for recording playback */}
+      <audio
+        ref={audioRef}
+        onPlay={() => { setIsAudioPlaying(true); setIsAudioLoading(false); }}
+        onPause={() => setIsAudioPlaying(false)}
+        onEnded={() => { setIsAudioPlaying(false); setActiveAudioContact(null); }}
+        onLoadStart={() => setIsAudioLoading(true)}
+        onCanPlay={() => setIsAudioLoading(false)}
+        onTimeUpdate={() => { if (audioRef.current) setCurrentTime(audioRef.current.currentTime); }}
+        onDurationChange={() => { if (audioRef.current) setDuration(audioRef.current.duration); }}
+        onError={() => { setIsAudioLoading(false); toast.error('Recording failed to load'); setActiveAudioContact(null); }}
+        preload="metadata"
+        className="hidden"
+      />
+
+      {/* Transcript modal */}
+      {transcriptContact && (
+        <TranscriptModal
+          log={{
+            call_id:       transcriptContact.call_session_id || transcriptContact.id,
+            phone_number:  transcriptContact.phone_number,
+            date:          transcriptContact.answered_at || transcriptContact.dialed_at || '',
+            status:        'Completed',
+            recording_url: transcriptContact.recording_url || null,
+            transcript:    transcriptContact.transcript || '',
+            json_output:   null,
+            agent_name:    campaign.name || 'Campaign',
+            customer_name: transcriptContact.name || undefined,
+          }}
+          onClose={() => setTranscriptContact(null)}
+          generateCallFileName={(log, ext) =>
+            `transcript_${log.phone_number.replace(/[^0-9+]/g, '')}_${log.call_id.slice(0, 8)}.${ext}`
+          }
+        />
+      )}
     </div>
   );
 };

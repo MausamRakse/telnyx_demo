@@ -260,3 +260,95 @@ async def reconcile_campaign(campaign_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── On-demand transcript fetch for a specific contact ─────────────────────────
+
+@router.get(
+    "/{campaign_id}/contacts/{contact_id}/transcript",
+    summary="Fetch or refresh transcript for a specific campaign contact",
+)
+async def get_contact_transcript(campaign_id: str, contact_id: str):
+    """
+    Fetch the AI conversation transcript for a specific campaign contact.
+
+    Looks up the contact's call_session_id, then returns transcript messages
+    from the database. If none are found, attempts a live fetch from Telnyx
+    AI Conversations API (with up to 3 retries) and stores the result.
+
+    Returns:
+        {
+            "contact_id": str,
+            "call_session_id": str | None,
+            "transcript": str | None,   ← formatted "Speaker: text\\n" lines
+            "messages": [...],          ← structured message objects
+        }
+    """
+    from utils.supabase_client import supabase
+    from services.transcript_service import fetch_transcript_with_retries
+    from database.transcript_store import get_transcript
+
+    # 1. Look up contact
+    try:
+        contact_res = (
+            supabase.table("campaign_contacts")
+            .select("id, campaign_id, call_session_id, call_status")
+            .eq("id", contact_id)
+            .eq("campaign_id", campaign_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
+
+    if not contact_res.data:
+        raise HTTPException(status_code=404, detail="Contact not found in this campaign")
+
+    contact = contact_res.data[0]
+    session_id = contact.get("call_session_id")
+
+    if not session_id:
+        return {
+            "contact_id":      contact_id,
+            "call_session_id": None,
+            "transcript":      None,
+            "messages":        [],
+            "note":            "No call_session_id recorded — call may not have been answered yet",
+        }
+
+    # 2. Try to get from DB first (fast path)
+    record = get_transcript(session_id)
+    if not record or not record.get("messages"):
+        # 3. Not in DB — fetch live from Telnyx with retries
+        record = await fetch_transcript_with_retries(
+            call_session_id=session_id,
+            retries=3,
+            delay_secs=2.0,
+            campaign_id=campaign_id,
+            contact_id=contact_id,
+        )
+
+    if not record or not record.get("messages"):
+        return {
+            "contact_id":      contact_id,
+            "call_session_id": session_id,
+            "transcript":      None,
+            "messages":        [],
+            "note":            "No transcript available yet — it may still be processing",
+        }
+
+    # 4. Build formatted text
+    lines = [
+        f"{m['speaker']}: {m['text']}"
+        for m in record["messages"]
+        if (m.get("text") or "").strip()
+    ]
+    formatted = "\n".join(lines) if lines else None
+
+    return {
+        "contact_id":      contact_id,
+        "call_session_id": session_id,
+        "transcript":      formatted,
+        "messages":        record["messages"],
+    }
+
