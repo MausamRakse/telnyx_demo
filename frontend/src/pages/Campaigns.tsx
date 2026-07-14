@@ -3,7 +3,7 @@ import {
   Megaphone, Plus, Play, Pause, Square, RefreshCw, Eye, ArrowLeft,
   Upload, CheckCircle2, AlertCircle, Clock, PhoneCall,
   PhoneOff, PhoneMissed, Bot, Loader2, ChevronLeft, ChevronRight,
-  BarChart3, FileText, X, Info, PlayCircle, Download, MessageSquare
+  BarChart3, FileText, X, Info, PlayCircle, MessageSquare
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
