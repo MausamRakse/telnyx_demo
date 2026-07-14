@@ -29,8 +29,8 @@ def _format_call_log(row: dict) -> dict:
     """
     # Map Supabase status → frontend display status
     status_map = {
-        "completed": "Answered",
-        "answered":  "Answered",
+        "completed": "Completed",
+        "answered":  "Completed",
         "in_progress": "Processing",
         "initiated":   "Processing",
         "failed":      "Not Answered",
@@ -108,7 +108,7 @@ async def call_logs_endpoint(limit: int = 50):
                         
                     # Override status to Answered if recording is longer than 2s
                     if rec.get("duration_secs", 0) > 2:
-                        log["status"] = "Answered"
+                        log["status"] = "Completed"
             except Exception:
                 pass
 
@@ -129,7 +129,7 @@ async def call_logs_endpoint(limit: int = 50):
                     ]
                     log["transcript"] = "\n".join(lines) if lines else None
                     if log["transcript"]:
-                        log["status"] = "Answered"
+                        log["status"] = "Completed"
             except Exception:
                 pass
 
