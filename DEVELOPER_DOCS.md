@@ -150,14 +150,22 @@ Indian Phone (+91 9876543210) — rings on the person's mobile
 | Record the call | ✅ Works | ✅ Works |
 | Get transcripts | ✅ Works | ✅ Works |
 
+Telnyx is an excellent programmable communications platform, but it is built primarily for the North American and European markets. It does not issue Indian phone numbers (DIDs) and cannot directly terminate calls onto the Indian PSTN (Public Switched Telephone Network). If you try to dial an Indian mobile number directly from Telnyx without a SIP trunk, the call will either fail outright, be blocked by carrier restrictions, or become very expensive due to international routing fees. This makes Telnyx alone unsuitable for any product that needs to call or be called from Indian phone numbers.
+
 ### Why Not Use Vobiz Alone?
 
-Vobiz is just a SIP trunk — it has no AI, no webhooks, no programmable call control. It is a dumb pipe that can only place phone calls. You cannot attach an AI assistant, record calls, or get transcripts using Vobiz alone.
+Vobiz is an Indian SIP trunk provider — nothing more and nothing less. It is what engineers call a **"dumb pipe"**: it can physically route a phone call from point A to point B on the Indian telephone network, but it has zero intelligence built in. Vobiz has no API for call control, no ability to attach an AI assistant to a live call, no webhook system to notify your backend of call events, no recording engine, and no transcription service. If you tried to build this product on Vobiz alone, you would just be making plain phone calls with no automation, no AI, and no data.
 
 ### Summary
 
 > **Telnyx brings the intelligence. Vobiz brings the Indian connectivity.**
-> Together they form a complete system: Telnyx controls the call and runs the AI, while Vobiz physically terminates the call to any Indian phone number.
+
+The architecture works because each provider contributes exactly what the other lacks:
+
+- **Telnyx** is the "brain" of every call — it controls the call lifecycle (answer, hangup, transfer), attaches the AI voice assistant, streams real-time transcripts, records audio, and fires webhook events to your backend for every state change.
+- **Vobiz** is the "last mile" for India — it provides the Indian phone numbers (DIDs) used as the caller ID, and it physically terminates the outbound call onto the Indian PSTN so that any Indian mobile or landline actually rings.
+
+Without Telnyx, there is no AI or call automation. Without Vobiz, there is no way to reach Indian phone numbers. Together, they form a complete, production-grade AI calling system for the Indian market.
 
 ---
 
