@@ -8,22 +8,23 @@
 ## Table of Contents
 
 1. [System Overview](#1-system-overview)
-2. [Technology Stack](#2-technology-stack)
-3. [Complete Project Structure](#3-complete-project-structure)
-4. [How the System Works — Full Call Flow](#4-how-the-system-works--full-call-flow)
-5. [Telnyx Account Setup](#5-telnyx-account-setup)
-6. [Phone Number Setup on Telnyx](#6-phone-number-setup-on-telnyx)
-7. [SIP Trunk Setup (Vobiz)](#7-sip-trunk-setup-vobiz)
-8. [Supabase Database Setup](#8-supabase-database-setup)
-9. [Environment Variables Reference](#9-environment-variables-reference)
-10. [Backend — Architecture & Services](#10-backend--architecture--services)
-11. [API Endpoints Reference](#11-api-endpoints-reference)
-12. [Frontend — Architecture](#12-frontend--architecture)
-13. [Running Locally (Development)](#13-running-locally-development)
-14. [Running in Production (Docker / Render)](#14-running-in-production-docker--render)
-15. [Campaign Dialer — How It Works](#15-campaign-dialer--how-it-works)
-16. [Transcripts & Recordings Flow](#16-transcripts--recordings-flow)
-17. [Troubleshooting Common Issues](#17-troubleshooting-common-issues)
+2. [Why Telnyx + Vobiz? — The Dual-Provider Architecture](#2-why-telnyx--vobiz--the-dual-provider-architecture)
+3. [Technology Stack](#3-technology-stack)
+4. [Complete Project Structure](#4-complete-project-structure)
+5. [How the System Works — Full Call Flow](#5-how-the-system-works--full-call-flow)
+6. [Telnyx Account Setup](#6-telnyx-account-setup)
+7. [Phone Number Setup on Telnyx](#7-phone-number-setup-on-telnyx)
+8. [SIP Trunk Setup (Vobiz)](#8-sip-trunk-setup-vobiz)
+9. [Supabase Database Setup](#9-supabase-database-setup)
+10. [Environment Variables Reference](#10-environment-variables-reference)
+11. [Backend — Architecture & Services](#11-backend--architecture--services)
+12. [API Endpoints Reference](#12-api-endpoints-reference)
+13. [Frontend — Architecture](#13-frontend--architecture)
+14. [Running Locally (Development)](#14-running-locally-development)
+15. [Running in Production (Docker / Render)](#15-running-in-production-docker--render)
+16. [Campaign Dialer — How It Works](#16-campaign-dialer--how-it-works)
+17. [Transcripts & Recordings Flow](#17-transcripts--recordings-flow)
+18. [Troubleshooting Common Issues](#18-troubleshooting-common-issues)
 
 ---
 
@@ -68,7 +69,99 @@ This project is a **Unified AI Calling Agent** — a full-stack application that
 
 ---
 
-## 2. Technology Stack
+---
+
+## 2. Why Telnyx + Vobiz? — The Dual-Provider Architecture
+
+This is the **most important architectural decision** in the project. Here is a clear explanation of why we need **both** services and what each one does.
+
+### The Core Problem: Telnyx Cannot Dial Indian Phone Numbers Directly
+
+Telnyx is a US-based carrier that operates primarily in North America and Europe. It provides:
+- Excellent **Call Control API** (programmable telephony)
+- Powerful **AI Assistants** (voice AI)
+- Reliable **recordings and transcripts**
+- US/EU phone numbers
+
+However, **Telnyx does not offer Indian DID (Direct Inward Dialing) numbers**, and direct PSTN calls to Indian numbers from Telnyx are either unavailable or very expensive due to international termination restrictions.
+
+### The Solution: Vobiz as an Indian SIP Trunk
+
+Vobiz is an Indian SIP trunk / VoIP carrier that provides:
+- **Indian phone numbers (DIDs)** — e.g. `+918071581212`
+- **Indian PSTN termination** — can call any Indian mobile or landline number cheaply and reliably
+- **SIP trunk connectivity** — connects to Telnyx via SIP protocol
+
+### How They Work Together
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    What Each Provider Does                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  TELNYX                          VOBIZ                          │
+│  ───────                         ─────                          │
+│  ✅ AI Voice Assistants           ✅ Indian phone numbers (DIDs) │
+│  ✅ Call Control API              ✅ Indian PSTN termination      │
+│  ✅ Recordings & Transcripts      ✅ SIP trunk (connects to Telnyx)│
+│  ✅ Webhooks & call events        ✅ Low-cost calls to India      │
+│  ✅ US/EU phone numbers           ❌ No AI, no webhooks, no API   │
+│  ❌ No Indian DID numbers         ❌ No recordings or transcripts │
+│  ❌ Cannot dial Indian PSTN       ❌ No call control logic        │
+│                                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The Outbound Call Path (Step by Step)
+
+```
+Your Backend
+    │
+    │  POST /calls to Telnyx API
+    │  to: sip:+919876543210@sip.vobiz.com   ← SIP URI wrapping the Indian number
+    │  from: your Telnyx DID
+    │  sip_auth_username: vobiz_user
+    │  sip_auth_password: vobiz_pass
+    │
+    ▼
+Telnyx (handles call control, AI, recording)
+    │
+    │  Routes the call via SIP protocol to Vobiz
+    │  (Telnyx dials: sip:+919876543210@sip.vobiz.com)
+    │
+    ▼
+Vobiz SIP Trunk
+    │
+    │  Terminates the call onto the Indian PSTN
+    │  (Vobiz dials: +91 9876543210 as a real mobile call)
+    │
+    ▼
+Indian Phone (+91 9876543210) — rings on the person's mobile
+```
+
+### Why Not Use Telnyx Alone?
+
+| Scenario | Telnyx Only | Telnyx + Vobiz |
+|---|---|---|
+| Call a US number | ✅ Works | ✅ Works |
+| Call an Indian mobile | ❌ Not available / blocked | ✅ Works |
+| Have an Indian caller ID | ❌ No Indian DIDs | ✅ Indian DID as FROM number |
+| AI voice conversation | ✅ Works | ✅ Works |
+| Record the call | ✅ Works | ✅ Works |
+| Get transcripts | ✅ Works | ✅ Works |
+
+### Why Not Use Vobiz Alone?
+
+Vobiz is just a SIP trunk — it has no AI, no webhooks, no programmable call control. It is a dumb pipe that can only place phone calls. You cannot attach an AI assistant, record calls, or get transcripts using Vobiz alone.
+
+### Summary
+
+> **Telnyx brings the intelligence. Vobiz brings the Indian connectivity.**
+> Together they form a complete system: Telnyx controls the call and runs the AI, while Vobiz physically terminates the call to any Indian phone number.
+
+---
+
+## 3. Technology Stack
 
 ### Backend
 
